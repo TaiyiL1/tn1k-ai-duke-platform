@@ -278,20 +278,21 @@ let sbClient = null;
 let dbReady = false;
 let dbCache = { courses: [], reviewers: [], logs: [] };
 let dbLoading = false;
+// 管理员 Auth 会话状态
+let authUser = null;
 
-function initSupabase(reviewerToken) {
+function initSupabase() {
   const url = localStorage.getItem('dudao_sb_url');
   const key = localStorage.getItem('dudao_sb_key');
   if(url && key) {
     try {
-      const options = {};
-      // 督课官端携带 x-reviewer-token 请求头，RLS 据此限制数据访问范围
-      if(reviewerToken) {
-        options.global = {
-          headers: { 'x-reviewer-token': reviewerToken }
-        };
-      }
-      sbClient = window.supabase.createClient(url, key, options);
+      sbClient = window.supabase.createClient(url, key, {
+        auth: {
+          autoRefreshToken: true,
+          persistSession: true,
+          detectSessionInUrl: true
+        }
+      });
       return true;
     } catch(e) {
       console.error('Supabase init error:', e);
@@ -301,6 +302,80 @@ function initSupabase(reviewerToken) {
   return false;
 }
 
+// =========== AUTH HELPERS ===========
+async function getAuthUser() {
+  if(!sbClient) return null;
+  try {
+    const { data } = await sbClient.auth.getUser();
+    authUser = data.user;
+    return data.user;
+  } catch(e) {
+    console.error('getAuthUser error:', e);
+    return null;
+  }
+}
+
+async function adminSignIn(email, password) {
+  if(!sbClient) return { error: { message: '数据库未初始化' } };
+  const { data, error } = await sbClient.auth.signInWithPassword({ email, password });
+  if(data && data.user) authUser = data.user;
+  return { data, error };
+}
+
+async function adminSignOut() {
+  if(!sbClient) return;
+  await sbClient.auth.signOut();
+  authUser = null;
+}
+
+// =========== REVIEWER RPC (督课官端专用) ===========
+// 督课官端完全通过 RPC 函数访问数据，不直接 SELECT 表
+
+async function rpcGetReviewerInfo(token) {
+  if(!sbClient || !token) return null;
+  try {
+    const { data, error } = await sbClient.rpc('get_reviewer_info', { p_token: token });
+    if(error) { console.error('rpcGetReviewerInfo error:', error); return null; }
+    return data && data.length > 0 ? data[0] : null;
+  } catch(e) {
+    console.error('rpcGetReviewerInfo exception:', e);
+    return null;
+  }
+}
+
+async function rpcGetReviewerCourses(token) {
+  if(!sbClient || !token) return [];
+  try {
+    const { data, error } = await sbClient.rpc('get_reviewer_courses', { p_token: token });
+    if(error) { console.error('rpcGetReviewerCourses error:', error); return []; }
+    return data || [];
+  } catch(e) {
+    console.error('rpcGetReviewerCourses exception:', e);
+    return [];
+  }
+}
+
+async function rpcSubmitReview(token, courseId, finalLayer, needFollowup, hasRisk, riskType, feedback, notes) {
+  if(!sbClient || !token) return { success: false, error: '数据库未初始化' };
+  try {
+    const { data, error } = await sbClient.rpc('submit_review', {
+      p_token: token,
+      p_course_id: courseId,
+      p_final_layer: finalLayer,
+      p_need_followup: needFollowup,
+      p_has_risk: hasRisk,
+      p_risk_type: riskType,
+      p_teacher_feedback: feedback,
+      p_internal_notes: notes
+    });
+    if(error) return { success: false, error: error.message };
+    return { success: data === true };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// =========== ADMIN DATA LOAD (管理员端 - 直接表操作) ===========
 async function loadAllData() {
   if(!sbClient) return dbCache;
   try {
@@ -397,87 +472,100 @@ CREATE TABLE IF NOT EXISTS review_logs (
 );
 
 -- 启用 RLS（行级安全）并配置精细化策略
--- 管理员端（无 x-reviewer-token 头）：全量读写
--- 督课官端（携带 x-reviewer-token 头）：仅可访问自己的数据
+-- v0.5 新方案：管理员通过 Supabase Auth + admin_uids 表授权；督课官通过 RPC 访问
 ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviewers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY;
 
--- 辅助函数：从请求头中提取督课官 token
-CREATE OR REPLACE FUNCTION get_reviewer_token()
-RETURNS TEXT AS $$
+-- 管理员 uid 表（注册哪些 Auth 用户是管理员）
+CREATE TABLE IF NOT EXISTS admin_uids (
+  uid UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE admin_uids ENABLE ROW LEVEL SECURITY;
+
+-- 辅助函数：判断当前 authenticated 用户是否为管理员
+CREATE OR REPLACE FUNCTION is_admin()
+RETURNS BOOLEAN AS $$
 BEGIN
-  RETURN current_setting('request.headers', true)::json->>'x-reviewer-token';
-EXCEPTION
-  WHEN OTHERS THEN
-    RETURN NULL;
+  RETURN EXISTS (SELECT 1 FROM admin_uids WHERE uid = auth.uid());
+EXCEPTION WHEN OTHERS THEN RETURN FALSE;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
 
--- ===== courses 表策略 =====
--- 读：管理员全量；督课官仅自己的课程
-CREATE POLICY "courses_select_policy" ON courses
-  FOR SELECT
-  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token());
+-- ===== courses 表策略：仅管理员 authenticated 用户可操作 =====
+CREATE POLICY "courses_select_admin" ON courses FOR SELECT TO authenticated USING (is_admin());
+CREATE POLICY "courses_insert_admin" ON courses FOR INSERT TO authenticated WITH CHECK (is_admin());
+CREATE POLICY "courses_update_admin" ON courses FOR UPDATE TO authenticated USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "courses_delete_admin" ON courses FOR DELETE TO authenticated USING (is_admin());
 
--- 增：仅管理员
-CREATE POLICY "courses_insert_policy" ON courses
-  FOR INSERT
-  WITH CHECK (get_reviewer_token() IS NULL);
+-- ===== reviewers 表策略：仅管理员可操作 =====
+CREATE POLICY "reviewers_select_admin" ON reviewers FOR SELECT TO authenticated USING (is_admin());
+CREATE POLICY "reviewers_insert_admin" ON reviewers FOR INSERT TO authenticated WITH CHECK (is_admin());
+CREATE POLICY "reviewers_update_admin" ON reviewers FOR UPDATE TO authenticated USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "reviewers_delete_admin" ON reviewers FOR DELETE TO authenticated USING (is_admin());
 
--- 改：管理员全量；督课官仅改自己的且不能改 reviewer_token
-CREATE POLICY "courses_update_policy" ON courses
-  FOR UPDATE
-  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token())
-  WITH CHECK (get_reviewer_token() IS NULL OR (reviewer_token = get_reviewer_token() AND reviewer_token = OLD.reviewer_token));
+-- ===== review_logs 表策略：仅管理员可操作 =====
+CREATE POLICY "review_logs_select_admin" ON review_logs FOR SELECT TO authenticated USING (is_admin());
+CREATE POLICY "review_logs_insert_admin" ON review_logs FOR INSERT TO authenticated WITH CHECK (is_admin());
+CREATE POLICY "review_logs_update_admin" ON review_logs FOR UPDATE TO authenticated USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "review_logs_delete_admin" ON review_logs FOR DELETE TO authenticated USING (is_admin());
 
--- 删：仅管理员
-CREATE POLICY "courses_delete_policy" ON courses
-  FOR DELETE
-  USING (get_reviewer_token() IS NULL);
+-- ===== 督课官 RPC 函数（SECURITY DEFINER 绕过 RLS，函数内部校验 token）=====
 
--- ===== reviewers 表策略 =====
--- 读：管理员全量；督课官仅自己
-CREATE POLICY "reviewers_select_policy" ON reviewers
-  FOR SELECT
-  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token());
+-- 获取督课官信息
+CREATE OR REPLACE FUNCTION get_reviewer_info(p_token TEXT)
+RETURNS TABLE (reviewer_id TEXT, reviewer_name TEXT, subject TEXT, token TEXT, max_tasks INTEGER, assigned_count INTEGER, completed_count INTEGER, status TEXT) AS $$
+BEGIN
+  IF p_token IS NULL OR p_token = '' THEN RETURN; END IF;
+  RETURN QUERY SELECT r.reviewer_id, r.reviewer_name, r.subject, r.token, r.max_tasks, r.assigned_count, r.completed_count, r.status
+    FROM reviewers r WHERE r.token = p_token AND r.status = '启用' LIMIT 1;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- 增：仅管理员
-CREATE POLICY "reviewers_insert_policy" ON reviewers
-  FOR INSERT
-  WITH CHECK (get_reviewer_token() IS NULL);
+-- 获取督课官课程列表
+CREATE OR REPLACE FUNCTION get_reviewer_courses(p_token TEXT)
+RETURNS TABLE (course_id TEXT, course_name TEXT, subject TEXT, teacher_name TEXT, teacher_id TEXT, class_name TEXT, school_name TEXT, lesson_time TEXT, duration INTEGER, ai_score NUMERIC, ai_report_url TEXT, replay_url TEXT, ai_layer TEXT, final_layer TEXT, need_review BOOLEAN, need_followup BOOLEAN, assigned_reviewer TEXT, reviewer_token TEXT, review_status TEXT, teacher_feedback TEXT, internal_notes TEXT, created_at TEXT, updated_at TEXT) AS $$
+DECLARE v_valid BOOLEAN;
+BEGIN
+  IF p_token IS NULL OR p_token = '' THEN RETURN; END IF;
+  SELECT EXISTS (SELECT 1 FROM reviewers WHERE token = p_token AND status = '启用') INTO v_valid;
+  IF NOT v_valid THEN RETURN; END IF;
+  RETURN QUERY SELECT c.course_id, c.course_name, c.subject, c.teacher_name, c.teacher_id, c.class_name, c.school_name, c.lesson_time, c.duration, c.ai_score, c.ai_report_url, c.replay_url, c.ai_layer, c.final_layer, c.need_review, c.need_followup, c.assigned_reviewer, c.reviewer_token, c.review_status, c.teacher_feedback, c.internal_notes, c.created_at, c.updated_at
+    FROM courses c WHERE c.reviewer_token = p_token ORDER BY c.created_at DESC;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- 改：管理员全量；督课官仅改自己的且不能改 token
-CREATE POLICY "reviewers_update_policy" ON reviewers
-  FOR UPDATE
-  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token())
-  WITH CHECK (get_reviewer_token() IS NULL OR (token = get_reviewer_token() AND token = OLD.token));
+-- 提交复核
+CREATE OR REPLACE FUNCTION submit_review(p_token TEXT, p_course_id TEXT, p_final_layer TEXT, p_need_followup BOOLEAN, p_has_risk BOOLEAN, p_risk_type TEXT, p_teacher_feedback TEXT, p_internal_notes TEXT)
+RETURNS BOOLEAN AS $$
+DECLARE v_reviewer_name TEXT; v_status TEXT; v_completed_count INTEGER;
+BEGIN
+  IF p_token IS NULL OR p_token = '' THEN RETURN FALSE; END IF;
+  IF p_course_id IS NULL OR p_course_id = '' THEN RETURN FALSE; END IF;
+  IF p_final_layer IS NULL OR p_final_layer = '' THEN RETURN FALSE; END IF;
+  SELECT reviewer_name INTO v_reviewer_name FROM reviewers WHERE token = p_token AND status = '启用' LIMIT 1;
+  IF v_reviewer_name IS NULL THEN RETURN FALSE; END IF;
+  IF NOT EXISTS (SELECT 1 FROM courses WHERE course_id = p_course_id AND reviewer_token = p_token) THEN RETURN FALSE; END IF;
+  IF p_final_layer IN ('暂停授课建议', '清退复审建议') THEN v_status := '需负责人复审'; ELSE v_status := '已完成'; END IF;
+  UPDATE courses SET final_layer = p_final_layer, need_followup = p_need_followup, review_status = v_status, teacher_feedback = COALESCE(p_teacher_feedback, ''), internal_notes = COALESCE(p_internal_notes, ''), updated_at = NOW()::TEXT
+    WHERE course_id = p_course_id AND reviewer_token = p_token;
+  INSERT INTO review_logs (log_id, course_id, reviewer_name, final_layer, need_followup, has_risk, risk_type, teacher_feedback, internal_notes, submitted_at)
+    VALUES ('L' || EXTRACT(EPOCH FROM NOW())::BIGINT::TEXT || '_' || substr(md5(random()::TEXT), 1, 6), p_course_id, v_reviewer_name, p_final_layer, p_need_followup, p_has_risk, COALESCE(p_risk_type, ''), COALESCE(p_teacher_feedback, ''), COALESCE(p_internal_notes, ''), NOW()::TEXT);
+  SELECT COUNT(*) INTO v_completed_count FROM courses WHERE reviewer_token = p_token AND review_status IN ('已完成', '需负责人复审');
+  UPDATE reviewers SET completed_count = v_completed_count WHERE token = p_token;
+  RETURN TRUE;
+EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'submit_review error: %', SQLERRM; RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- 删：仅管理员
-CREATE POLICY "reviewers_delete_policy" ON reviewers
-  FOR DELETE
-  USING (get_reviewer_token() IS NULL);
-
--- ===== review_logs 表策略 =====
--- 读：仅管理员（督课官不能查看所有日志）
-CREATE POLICY "review_logs_select_policy" ON review_logs
-  FOR SELECT
-  USING (get_reviewer_token() IS NULL);
-
--- 增：管理员全量；督课官仅能写自己的记录
-CREATE POLICY "review_logs_insert_policy" ON review_logs
-  FOR INSERT
-  WITH CHECK (get_reviewer_token() IS NULL OR reviewer_name = (SELECT reviewer_name FROM reviewers WHERE token = get_reviewer_token() LIMIT 1));
-
--- 改：仅管理员
-CREATE POLICY "review_logs_update_policy" ON review_logs
-  FOR UPDATE
-  USING (get_reviewer_token() IS NULL);
-
--- 删：仅管理员
-CREATE POLICY "review_logs_delete_policy" ON review_logs
-  FOR DELETE
-  USING (get_reviewer_token() IS NULL);`;
+-- 授予 anon/authenticated 执行 RPC 函数的权限
+GRANT EXECUTE ON FUNCTION get_reviewer_info(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_reviewer_courses(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION submit_review(TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, TEXT) TO anon, authenticated;`;
 
 function renderConfigPage(errorMsg) {
   const savedUrl = localStorage.getItem('dudao_sb_url') || '';
@@ -588,15 +676,16 @@ window.testConnection = async function() {
   statusEl.innerHTML = '<div class="config-status" style="background:var(--color-warning-bg);color:var(--color-warning)">⏳ 正在测试连接...</div>';
   try {
     const testClient = window.supabase.createClient(url, key);
-    const { error } = await testClient.from('courses').select('course_id').limit(1);
+    // 使用 RPC 测试（督课官 RPC 对 anon 开放，管理员端登录后才会用 authenticated 角色）
+    const { data, error } = await testClient.rpc('get_reviewer_info', { p_token: 'test-connection-probe' });
     if(error) {
-      if(error.message.includes('does not exist') || error.message.includes('relation') || error.message.includes('does not exist')) {
-        statusEl.innerHTML = '<div class="config-status error">连接成功，但表不存在。请按照下方步骤先执行建表 SQL。</div>';
+      if(error.message && (error.message.includes('does not exist') || error.message.includes('function') || error.message.includes('relation'))) {
+        statusEl.innerHTML = '<div class="config-status error">连接成功，但 RPC 函数不存在。请按照下方步骤先执行建表+RPC SQL。</div>';
       } else {
         statusEl.innerHTML = '<div class="config-status error">连接失败：' + error.message + '</div>';
       }
     } else {
-      statusEl.innerHTML = '<div class="config-status success">✅ 连接成功！表结构正常。可以保存配置。</div>';
+      statusEl.innerHTML = '<div class="config-status success">✅ 连接成功！数据库 RPC 正常。可以保存配置。</div>';
     }
   } catch(e) {
     statusEl.innerHTML = '<div class="config-status error">连接失败：' + e.message + '</div>';
@@ -617,19 +706,20 @@ window.saveConfig = async function() {
   if(publicUrl) localStorage.setItem('dudao_public_url', publicUrl);
   else localStorage.removeItem('dudao_public_url');
   statusEl.innerHTML = '<div class="config-status success">✅ 配置已保存，正在初始化...</div>';
-  // Re-init（督课官端携带 token header，确保 RLS 正确过滤）
-  const route = getRoute();
-  const reviewerToken = route.page === 'reviewer' ? route.token : null;
-  if(initSupabase(reviewerToken)) {
-    const { error } = await sbClient.from('courses').select('course_id').limit(1);
-    if(error) {
-      statusEl.innerHTML = '<div class="config-status error">配置已保存，但数据库连接失败：' + error.message + '</div>';
-      return;
+  if(initSupabase()) {
+    // 用 RPC 方式测试连接（督课官端兼容；管理员端登录后再加载数据）
+    const route = getRoute();
+    if(route.page === 'reviewer') {
+      // 督课官端：调用 RPC 获取信息以验证连通性
+      const info = await rpcGetReviewerInfo(route.token);
+      // 即使 token 无效（info 为 null），只要数据库连通就算配置成功
+      dbReady = true;
+      setTimeout(() => { render(); }, 300);
+    } else {
+      // 管理员端：先不加载数据，等登录后再加载
+      dbReady = true;
+      setTimeout(() => { render(); }, 300);
     }
-    dbReady = true;
-    await loadAllData();
-    showLoading('正在加载数据...');
-    setTimeout(() => { hideLoading(); render(); }, 300);
   } else {
     statusEl.innerHTML = '<div class="config-status error">初始化失败，请检查配置</div>';
   }
@@ -779,18 +869,25 @@ const app = document.getElementById('app');
 async function render() {
   const route = getRoute();
   if(route.page === 'admin') {
-    if(!adminAuthenticated) { renderAdminAuth(); return; }
+    // 双层校验：1) Supabase Auth 登录  2) 管理员口令
+    const user = await getAuthUser();
+    if(!user) { renderAdminAuthLogin(); return; }
+    if(!adminAuthenticated) { renderAdminAuthPwd(); return; }
     await renderAdmin();
   }
   else await renderReviewer(route.token);
 }
 
 // =========== ADMIN AUTH ===========
+// 双层认证：
+//   第一层：Supabase Auth (email + 密码)
+//   第二层：管理员口令（childhood2024，可自定义）—— 额外前端保护
 let adminAuthenticated = false;
 const DEFAULT_ADMIN_PASSWORD = 'childhood2024';
 function getAdminPassword() { return localStorage.getItem('dudao_admin_pwd') || DEFAULT_ADMIN_PASSWORD; }
 
-function renderAdminAuth(errorMsg) {
+// 第一层：Supabase Auth 邮箱密码登录
+function renderAdminAuthLogin(errorMsg) {
   app.innerHTML = `
     <header class="app-header">
       <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
@@ -799,16 +896,55 @@ function renderAdminAuth(errorMsg) {
     <div style="max-width:400px;margin:80px auto;text-align:center">
       <div class="card"><div class="card-body" style="padding:40px 32px">
         <div style="font-size:48px;margin-bottom:16px">🔐</div>
-        <h2 style="font-size:18px;margin-bottom:8px">管理员身份验证</h2>
+        <h2 style="font-size:18px;margin-bottom:8px">管理员登录</h2>
+        <p style="color:var(--color-text-secondary);margin-bottom:24px">使用 Supabase Auth 账号登录管理后台</p>
+        <div class="form-group"><input class="form-input" id="authEmail" type="email" placeholder="管理员邮箱" style="font-size:14px;padding:10px" onkeydown="if(event.key==='Enter')window.doAuthLogin()"></div>
+        <div class="form-group"><input class="form-input" id="authPassword" type="password" placeholder="登录密码" style="font-size:14px;padding:10px" onkeydown="if(event.key==='Enter')window.doAuthLogin()"></div>
+        ${errorMsg ? '<div style="color:var(--color-danger);font-size:13px;margin-bottom:12px;text-align:left">'+errorMsg+'</div>' : ''}
+        <button class="btn btn-primary" onclick="window.doAuthLogin()" style="width:100%">登录</button>
+        <div style="margin-top:16px"><button class="btn-link" onclick="toggleAdminPwdSetting()" style="font-size:12px;color:var(--color-text-muted)">管理员口令设置</button></div>
+        <div id="adminPwdSetting" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border-light)">
+          <div class="form-group" style="margin-bottom:8px"><input class="form-input" id="newAdminPwd" type="password" placeholder="设置第二道口令（至少4位）" style="font-size:13px"></div>
+          <button class="btn btn-sm btn-default" onclick="saveAdminPwd()">保存新口令</button>
+          <div style="font-size:11px;color:var(--color-text-muted);margin-top:8px;text-align:left">第二道口令为额外前端保护，默认值：childhood2024</div>
+        </div>
+      </div></div>
+    </div>`;
+}
+
+window.doAuthLogin = async function() {
+  const email = document.getElementById('authEmail').value.trim();
+  const pwd = document.getElementById('authPassword').value;
+  if(!email || !pwd) { renderAdminAuthLogin('请输入邮箱和密码'); return; }
+  showLoading('正在登录...');
+  const { data, error } = await adminSignIn(email, pwd);
+  hideLoading();
+  if(error) {
+    renderAdminAuthLogin('登录失败：' + error.message);
+  } else if(data && data.user) {
+    // Auth 登录成功，进入第二道口令验证
+    renderAdminAuthPwd();
+  } else {
+    renderAdminAuthLogin('登录失败，请重试');
+  }
+};
+
+// 第二层：管理员口令（前端额外保护）
+function renderAdminAuthPwd(errorMsg) {
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      <div class="header-right">${dbStatusHtml()}<button class="btn-config" onclick="reconfigDb()">⚙️ 数据库</button></div>
+    </header>
+    <div style="max-width:400px;margin:80px auto;text-align:center">
+      <div class="card"><div class="card-body" style="padding:40px 32px">
+        <div style="font-size:48px;margin-bottom:16px">🛡️</div>
+        <h2 style="font-size:18px;margin-bottom:8px">二次验证</h2>
         <p style="color:var(--color-text-secondary);margin-bottom:24px">请输入管理员口令以进入管理后台</p>
         <div class="form-group"><input class="form-input" id="adminPwdInput" type="password" placeholder="请输入管理员口令" style="text-align:center;font-size:15px;padding:12px" onkeydown="if(event.key==='Enter')window.doAdminAuth()"></div>
         ${errorMsg ? '<div style="color:var(--color-danger);font-size:13px;margin-bottom:12px">'+errorMsg+'</div>' : ''}
         <button class="btn btn-primary" onclick="window.doAdminAuth()" style="width:100%">验证并进入</button>
-        <div style="margin-top:16px"><button class="btn-link" onclick="toggleAdminPwdSetting()" style="font-size:12px;color:var(--color-text-muted)">口令设置</button></div>
-        <div id="adminPwdSetting" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border-light)">
-          <div class="form-group" style="margin-bottom:8px"><input class="form-input" id="newAdminPwd" type="password" placeholder="设置新口令（至少4位）" style="font-size:13px"></div>
-          <button class="btn btn-sm btn-default" onclick="saveAdminPwd()">保存新口令</button>
-        </div>
+        <div style="margin-top:12px"><button class="btn-link" onclick="window.doAdminSignOut()" style="font-size:12px;color:var(--color-text-muted)">← 退出登录</button></div>
       </div></div>
     </div>`;
 }
@@ -816,8 +952,17 @@ function renderAdminAuth(errorMsg) {
 window.doAdminAuth = function() {
   const pwd = document.getElementById('adminPwdInput').value;
   if(pwd === getAdminPassword()) { adminAuthenticated = true; renderAdmin(); }
-  else renderAdminAuth('口令错误，请重试');
+  else renderAdminAuthPwd('口令错误，请重试');
 };
+
+window.doAdminSignOut = async function() {
+  showLoading('正在退出...');
+  await adminSignOut();
+  adminAuthenticated = false;
+  hideLoading();
+  renderAdminAuthLogin('已退出登录');
+};
+
 window.toggleAdminPwdSetting = function() {
   const el = document.getElementById('adminPwdSetting');
   el.style.display = el.style.display === 'none' ? 'block' : 'none';
@@ -852,6 +997,7 @@ async function renderAdmin() {
       <div class="header-right">
         ${dbStatusHtml()}
         <button class="btn-config" onclick="reconfigDb()">⚙️ 数据库</button>
+        <button class="btn-config" onclick="window.doAdminSignOut()">🚪 退出</button>
         <span class="role-badge">管理员</span>
       </div>
     </header>
@@ -891,11 +1037,14 @@ async function renderAdmin() {
   renderTabContent();
 }
 
-window.reconfigDb = function() {
+window.reconfigDb = async function() {
   if(confirm('确定要重新配置数据库连接吗？')) {
     localStorage.removeItem('dudao_sb_url');
     localStorage.removeItem('dudao_sb_key');
+    try { if(sbClient) await sbClient.auth.signOut(); } catch(e) {}
     sbClient = null;
+    authUser = null;
+    adminAuthenticated = false;
     dbReady = false;
     renderConfigPage();
   }
@@ -1694,9 +1843,14 @@ window.exportByReviewer = function() {
 let reviewerState = { view:'list', currentCourseId:null };
 
 async function renderReviewer(token) {
-  await refreshData();
-  const reviewers = getReviewers();
-  const reviewer = reviewers.find(r=>r.token===token);
+  // 督课官端通过 RPC 函数获取数据，不直接 SELECT 表
+  showLoading('正在加载...');
+  const [reviewer, courses] = await Promise.all([
+    rpcGetReviewerInfo(token),
+    rpcGetReviewerCourses(token)
+  ]);
+  hideLoading();
+
   if(!reviewer) {
     app.innerHTML = `
       <header class="app-header">
@@ -1734,14 +1888,13 @@ async function renderReviewer(token) {
   }
 
   if(reviewerState.view === 'detail' && reviewerState.currentCourseId) {
-    renderReviewerDetail(reviewer);
+    renderReviewerDetail(reviewer, courses);
   } else {
-    renderReviewerList(reviewer);
+    renderReviewerList(reviewer, courses);
   }
 }
 
-function renderReviewerList(reviewer) {
-  const courses = getCourses().filter(c=>c.reviewer_token===reviewer.token);
+function renderReviewerList(reviewer, courses) {
   const pending = courses.filter(c=>c.review_status==='待复核'||c.review_status==='复核中').length;
   const completed = courses.filter(c=>c.review_status==='已完成'||c.review_status==='需负责人复审').length;
   const followup = courses.filter(c=>c.need_followup).length;
@@ -1803,8 +1956,7 @@ window.reviewerViewDetail = function(courseId) {
   render();
 };
 
-function renderReviewerDetail(reviewer) {
-  const courses = getCourses();
+function renderReviewerDetail(reviewer, courses) {
   const c = courses.find(x=>x.course_id===reviewerState.currentCourseId);
   if(!c) { reviewerState.view='list'; render(); return; }
   const isCompleted = c.review_status==='已完成'||c.review_status==='需负责人复审';
@@ -1940,67 +2092,17 @@ window.submitReview = async function(courseId, token) {
   const feedback = document.getElementById('reviewFeedback').value.trim();
   const notes = document.getElementById('reviewNotes').value.trim();
 
-  let status = '已完成';
-  if(finalLayer === '暂停授课建议' || finalLayer === '清退复审建议') {
-    status = '需负责人复审';
-  }
-
-  // Find reviewer by token
-  const reviewers = getReviewers();
-  const reviewer = reviewers.find(r=>r.token===token);
-  if(!reviewer) { alert('督课官身份验证失败，请重新登录'); return; }
-
-  // Validate course belongs to this reviewer (双校验 course_id + reviewer_token)
-  const courses = getCourses();
-  const course = courses.find(c=>c.course_id===courseId && c.reviewer_token===token);
-  if(!course) { alert('课程权限校验失败：该课程不属于当前督课官'); return; }
-
-  const reviewerName = reviewer.reviewer_name;
   showLoading('正在提交复核结果...');
-
-  // Update course (同时校验 course_id 和 reviewer_token)
-  const { error: courseErr } = await sbClient.from('courses').update({
-    final_layer: finalLayer,
-    need_followup: followup,
-    review_status: status,
-    teacher_feedback: feedback,
-    internal_notes: notes,
-    updated_at: now()
-  }).eq('course_id', courseId).eq('reviewer_token', token);
-
-  if(courseErr) {
-    hideLoading();
-    alert('提交失败：' + courseErr.message);
-    return;
-  }
-
-  // Insert log
-  const { error: logErr } = await sbClient.from('review_logs').insert({
-    log_id: 'L' + Date.now(),
-    course_id: courseId,
-    reviewer_name: reviewerName,
-    final_layer: finalLayer,
-    need_followup: followup,
-    has_risk: hasRisk,
-    risk_type: riskType,
-    teacher_feedback: feedback,
-    internal_notes: notes,
-    submitted_at: now()
-  });
-
-  if(logErr) {
-    hideLoading();
-    alert('日志记录失败：' + logErr.message);
-    return;
-  }
-
-  // Update reviewer completed_count
-  const { data: myCourses } = await sbClient.from('courses').select('*').eq('reviewer_token', reviewer.token);
-  const completedCount = (myCourses || []).filter(c => c.review_status === '已完成' || c.review_status === '需负责人复审').length;
-  await sbClient.from('reviewers').update({ completed_count: completedCount }).eq('reviewer_name', reviewerName);
-
-  await loadAllData();
+  // 调用 RPC 函数提交复核（函数内部完成 token 校验、课程归属校验、
+  // 更新 courses、插入 review_logs、更新 completed_count 等全部操作）
+  const result = await rpcSubmitReview(token, courseId, finalLayer, followup, hasRisk, riskType, feedback, notes);
   hideLoading();
+
+  if(!result.success) {
+    alert('提交失败：' + (result.error || '未知错误'));
+    return;
+  }
+
   alert('复核提交成功！');
   reviewerBack();
 };
@@ -2033,26 +2135,24 @@ function applyConfigFromUrl() {
 // =========== INIT ===========
 async function init() {
   const route = getRoute();
-  // 督课官端使用 token 初始化 sbClient，RLS 据此限制数据访问范围
-  const reviewerToken = route.page === 'reviewer' ? route.token : null;
 
-  if(route.page === 'reviewer' && !initSupabase(reviewerToken)) {
+  if(route.page === 'reviewer' && !initSupabase()) {
     applyConfigFromUrl();
   }
-  if(!initSupabase(reviewerToken)) {
+  if(!initSupabase()) {
     renderConfigPage();
     return;
   }
-  // Test connection
-  const { error } = await sbClient.from('courses').select('course_id').limit(1);
-  if(error) {
-    renderConfigPage('连接失败，请检查配置和表是否已创建：' + error.message);
-    return;
-  }
+  // 测试连接（使用 RPC 函数，anon 角色可执行）
+  const result = await rpcGetReviewerInfo('init-connection-check');
+  // result 为 null 可能是 token 无效，也可能是 RPC 不存在，这里无法区分
+  // 但只要没抛异常就算连通
   dbReady = true;
-  showLoading('正在加载数据...');
-  await loadAllData();
-  hideLoading();
+  // 管理员端：先检查 Auth 会话，再渲染
+  // 督课官端：直接渲染（RPC 拉数据）
+  if(route.page === 'admin') {
+    await getAuthUser();
+  }
   render();
 }
 

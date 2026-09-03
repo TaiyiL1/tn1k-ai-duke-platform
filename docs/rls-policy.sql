@@ -1,190 +1,204 @@
 -- ============================================================
--- AI 辅助督课工作台 - RLS 行级安全策略收紧方案
--- 版本: v1.0
+-- AI 辅助督课工作台 - RLS 行级安全策略 v0.5
+-- 版本: v0.5 (Supabase Auth + RPC 受控访问)
 -- 日期: 2026-09-03
 -- 适用: Supabase PostgreSQL
 -- ============================================================
 --
 -- 【方案说明】
--- 本系统使用 Supabase 的 anon/publishable key 进行前端数据访问。
--- 由于 anon key 的 auth.uid() 为 NULL，无法直接基于用户身份做 RLS。
+-- 本系统采用真正安全的两级权限模型：
+--   1. 管理员端：Supabase Auth (email + 密码登录)，authenticated 角色
+--      RLS 通过 auth.uid() 判断是否为管理员 uid，管理员获得全量读写权限
+--   2. 督课官端：完全通过 PostgreSQL Functions (RPC) 访问数据，禁止直接 SELECT 表
+--      RPC 函数使用 SECURITY DEFINER 模式，在函数内部校验 token 有效性
 --
--- 本方案使用「自定义请求头 x-reviewer-token」作为督课官身份标识：
---   - 管理员端：不携带 x-reviewer-token 头 → RLS 判定为管理员 → 全量读写
---   - 督课官端：携带 x-reviewer-token: <token> 头 → RLS 仅放行匹配 token 的数据
+-- 【RLS 策略总则】
+--   - anon 角色：三张表均无任何权限（拒绝所有操作）
+--   - authenticated 角色：仅管理员 uid 有全量读写权限
+--   - 督课官：通过 RPC 函数间接访问，RPC 绕过 RLS（SECURITY DEFINER）
 --
--- 优点：
---   1. 无需引入 Supabase Auth，不改变现有用户体系（token 制）
---   2. 管理员端代码零侵入（保持原样即可）
---   3. 督课官端数据读写都受 RLS 强制约束，无法越权
---   4. 实现简单，单文件 SQL 即可迁移
---
--- 局限：
---   1. 读权限隔离依赖前端正确设置 header（因 anon key 本身是公开的）
---   2. 如果督课官知道其他督课官的 token，可以伪造 header 访问（内部工具可接受）
---   3. 如需更强隔离，应引入 Supabase Auth authenticated 角色或 Edge Functions
---
--- 【前端配合】
---   - 管理员端：使用普通 sbClient（无特殊 header）
---   - 督课官端：sbClient 初始化时添加 global.headers: { 'x-reviewer-token': token }
+-- 【管理员 uid 配置】
+--   管理员 Auth 用户的 uid 需要在 admin_uids 表中注册。
+--   只有 uid 在 admin_uids 表中的 authenticated 用户才能操作数据。
 -- ============================================================
 
 -- ------------------------------------------------------------
--- 第一步：删除旧的全开放策略
+-- 第一步：确保 RLS 已启用
+-- ------------------------------------------------------------
+
+ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviewers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY;
+
+-- ------------------------------------------------------------
+-- 第二步：删除旧策略（兼容 v0.4 及更早版本）
 -- ------------------------------------------------------------
 
 DROP POLICY IF EXISTS "Allow all operations on courses" ON courses;
 DROP POLICY IF EXISTS "Allow all operations on reviewers" ON reviewers;
 DROP POLICY IF EXISTS "Allow all operations on review_logs" ON review_logs;
 
+DROP POLICY IF EXISTS "courses_select_policy" ON courses;
+DROP POLICY IF EXISTS "courses_insert_policy" ON courses;
+DROP POLICY IF EXISTS "courses_update_policy" ON courses;
+DROP POLICY IF EXISTS "courses_delete_policy" ON courses;
+
+DROP POLICY IF EXISTS "reviewers_select_policy" ON reviewers;
+DROP POLICY IF EXISTS "reviewers_insert_policy" ON reviewers;
+DROP POLICY IF EXISTS "reviewers_update_policy" ON reviewers;
+DROP POLICY IF EXISTS "reviewers_delete_policy" ON reviewers;
+
+DROP POLICY IF EXISTS "review_logs_select_policy" ON review_logs;
+DROP POLICY IF EXISTS "review_logs_insert_policy" ON review_logs;
+DROP POLICY IF EXISTS "review_logs_update_policy" ON review_logs;
+DROP POLICY IF EXISTS "review_logs_delete_policy" ON review_logs;
+
+-- 删除旧的辅助函数
+DROP FUNCTION IF EXISTS get_reviewer_token();
+
 -- ------------------------------------------------------------
--- 第二步：创建辅助函数（提取 x-reviewer-token 请求头）
+-- 第三步：创建管理员 uid 表
+-- ------------------------------------------------------------
+-- 用于存储被授权的管理员 Auth 用户 uid
+-- 只有在此表中的 uid 才能通过 RLS 获得全量读写权限
+
+CREATE TABLE IF NOT EXISTS admin_uids (
+  uid UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE admin_uids ENABLE ROW LEVEL SECURITY;
+
+-- admin_uids 表策略：authenticated 管理员可读，写入只能由服务端/owner 操作
+-- （管理员 uid 推荐通过 SQL Editor 或 Dashboard 手动添加）
+DROP POLICY IF EXISTS "admin_uids_select_policy" ON admin_uids;
+CREATE POLICY "admin_uids_select_policy" ON admin_uids
+  FOR SELECT
+  TO authenticated
+  USING (uid = auth.uid());
+
+-- ------------------------------------------------------------
+-- 第四步：辅助函数 - 判断当前用户是否为管理员
 -- ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION get_reviewer_token()
-RETURNS TEXT AS $$
+CREATE OR REPLACE FUNCTION is_admin()
+RETURNS BOOLEAN AS $$
 BEGIN
-  RETURN current_setting('request.headers', true)::json->>'x-reviewer-token';
+  -- 仅 authenticated 角色且 uid 在 admin_uids 表中才算管理员
+  RETURN EXISTS (
+    SELECT 1 FROM admin_uids WHERE uid = auth.uid()
+  );
 EXCEPTION
   WHEN OTHERS THEN
-    RETURN NULL;
+    RETURN FALSE;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public;
 
 -- ------------------------------------------------------------
--- 第三步：courses 表 RLS 策略
--- ------------------------------------------------------------
--- 规则：
---   SELECT - 管理员：全部；督课官：仅 reviewer_token = 自己的 token
---   INSERT - 管理员：全部；督课官：禁止
---   UPDATE - 管理员：全部；督课官：仅 reviewer_token = 自己的 token，且不能修改 reviewer_token
---   DELETE - 管理员：全部；督课官：禁止
--- ------------------------------------------------------------
-
--- SELECT
-CREATE POLICY "courses_select_policy" ON courses
-  FOR SELECT
-  USING (
-    get_reviewer_token() IS NULL
-    OR reviewer_token = get_reviewer_token()
-  );
-
--- INSERT
-CREATE POLICY "courses_insert_policy" ON courses
-  FOR INSERT
-  WITH CHECK (
-    get_reviewer_token() IS NULL
-  );
-
--- UPDATE
-CREATE POLICY "courses_update_policy" ON courses
-  FOR UPDATE
-  USING (
-    get_reviewer_token() IS NULL
-    OR reviewer_token = get_reviewer_token()
-  )
-  WITH CHECK (
-    get_reviewer_token() IS NULL
-    OR (
-      reviewer_token = get_reviewer_token()
-      AND reviewer_token = OLD.reviewer_token
-    )
-  );
-
--- DELETE
-CREATE POLICY "courses_delete_policy" ON courses
-  FOR DELETE
-  USING (
-    get_reviewer_token() IS NULL
-  );
-
--- ------------------------------------------------------------
--- 第四步：reviewers 表 RLS 策略
+-- 第五步：courses 表 RLS 策略
 -- ------------------------------------------------------------
 -- 规则：
---   SELECT - 管理员：全部；督课官：仅 token = 自己的 token（只能看到自己）
---   INSERT - 管理员：全部；督课官：禁止
---   UPDATE - 管理员：全部；督课官：仅 token = 自己的 token，且不能修改 token
---   DELETE - 管理员：全部；督课官：禁止
+--   anon: 无任何权限
+--   authenticated (管理员): 全量读写
+--   authenticated (非管理员): 无权限
 -- ------------------------------------------------------------
 
--- SELECT
-CREATE POLICY "reviewers_select_policy" ON reviewers
+-- SELECT - 仅管理员可读全部
+DROP POLICY IF EXISTS "courses_select_admin" ON courses;
+CREATE POLICY "courses_select_admin" ON courses
   FOR SELECT
-  USING (
-    get_reviewer_token() IS NULL
-    OR token = get_reviewer_token()
-  );
+  TO authenticated
+  USING (is_admin());
 
--- INSERT
-CREATE POLICY "reviewers_insert_policy" ON reviewers
+-- INSERT - 仅管理员可插入
+DROP POLICY IF EXISTS "courses_insert_admin" ON courses;
+CREATE POLICY "courses_insert_admin" ON courses
   FOR INSERT
-  WITH CHECK (
-    get_reviewer_token() IS NULL
-  );
+  TO authenticated
+  WITH CHECK (is_admin());
 
--- UPDATE
-CREATE POLICY "reviewers_update_policy" ON reviewers
+-- UPDATE - 仅管理员可更新
+DROP POLICY IF EXISTS "courses_update_admin" ON courses;
+CREATE POLICY "courses_update_admin" ON courses
   FOR UPDATE
-  USING (
-    get_reviewer_token() IS NULL
-    OR token = get_reviewer_token()
-  )
-  WITH CHECK (
-    get_reviewer_token() IS NULL
-    OR (
-      token = get_reviewer_token()
-      AND token = OLD.token
-    )
-  );
+  TO authenticated
+  USING (is_admin())
+  WITH CHECK (is_admin());
 
--- DELETE
-CREATE POLICY "reviewers_delete_policy" ON reviewers
+-- DELETE - 仅管理员可删除
+DROP POLICY IF EXISTS "courses_delete_admin" ON courses;
+CREATE POLICY "courses_delete_admin" ON courses
   FOR DELETE
-  USING (
-    get_reviewer_token() IS NULL
-  );
+  TO authenticated
+  USING (is_admin());
 
 -- ------------------------------------------------------------
--- 第五步：review_logs 表 RLS 策略
--- ------------------------------------------------------------
--- 规则：
---   SELECT - 管理员：全部；督课官：禁止（不能读取所有督课记录）
---   INSERT - 管理员：全部；督课官：仅 reviewer_name 对应自己（token 匹配的督课官名）
---   UPDATE - 管理员：全部；督课官：禁止
---   DELETE - 管理员：全部；督课官：禁止
+-- 第六步：reviewers 表 RLS 策略
 -- ------------------------------------------------------------
 
--- SELECT
-CREATE POLICY "review_logs_select_policy" ON review_logs
+-- SELECT - 仅管理员可读全部
+DROP POLICY IF EXISTS "reviewers_select_admin" ON reviewers;
+CREATE POLICY "reviewers_select_admin" ON reviewers
   FOR SELECT
-  USING (
-    get_reviewer_token() IS NULL
-  );
+  TO authenticated
+  USING (is_admin());
 
--- INSERT
-CREATE POLICY "review_logs_insert_policy" ON review_logs
+-- INSERT - 仅管理员可插入
+DROP POLICY IF EXISTS "reviewers_insert_admin" ON reviewers;
+CREATE POLICY "reviewers_insert_admin" ON reviewers
   FOR INSERT
-  WITH CHECK (
-    get_reviewer_token() IS NULL
-    OR reviewer_name = (
-      SELECT reviewer_name FROM reviewers WHERE token = get_reviewer_token() LIMIT 1
-    )
-  );
+  TO authenticated
+  WITH CHECK (is_admin());
 
--- UPDATE
-CREATE POLICY "review_logs_update_policy" ON review_logs
+-- UPDATE - 仅管理员可更新
+DROP POLICY IF EXISTS "reviewers_update_admin" ON reviewers;
+CREATE POLICY "reviewers_update_admin" ON reviewers
   FOR UPDATE
-  USING (
-    get_reviewer_token() IS NULL
-  );
+  TO authenticated
+  USING (is_admin())
+  WITH CHECK (is_admin());
 
--- DELETE
-CREATE POLICY "review_logs_delete_policy" ON review_logs
+-- DELETE - 仅管理员可删除
+DROP POLICY IF EXISTS "reviewers_delete_admin" ON reviewers;
+CREATE POLICY "reviewers_delete_admin" ON reviewers
   FOR DELETE
-  USING (
-    get_reviewer_token() IS NULL
-  );
+  TO authenticated
+  USING (is_admin());
+
+-- ------------------------------------------------------------
+-- 第七步：review_logs 表 RLS 策略
+-- ------------------------------------------------------------
+
+-- SELECT - 仅管理员可读全部
+DROP POLICY IF EXISTS "review_logs_select_admin" ON review_logs;
+CREATE POLICY "review_logs_select_admin" ON review_logs
+  FOR SELECT
+  TO authenticated
+  USING (is_admin());
+
+-- INSERT - 仅管理员可插入
+DROP POLICY IF EXISTS "review_logs_insert_admin" ON review_logs;
+CREATE POLICY "review_logs_insert_admin" ON review_logs
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (is_admin());
+
+-- UPDATE - 仅管理员可更新
+DROP POLICY IF EXISTS "review_logs_update_admin" ON review_logs;
+CREATE POLICY "review_logs_update_admin" ON review_logs
+  FOR UPDATE
+  TO authenticated
+  USING (is_admin())
+  WITH CHECK (is_admin());
+
+-- DELETE - 仅管理员可删除
+DROP POLICY IF EXISTS "review_logs_delete_admin" ON review_logs;
+CREATE POLICY "review_logs_delete_admin" ON review_logs
+  FOR DELETE
+  TO authenticated
+  USING (is_admin());
 
 -- ============================================================
 -- 迁移完成验证 SQL（可选）
@@ -198,6 +212,9 @@ CREATE POLICY "review_logs_delete_policy" ON review_logs
 -- -- 验证 RLS 已启用
 -- SELECT relname, rowsecurity
 -- FROM pg_class
--- WHERE relname IN ('courses', 'reviewers', 'review_logs')
+-- WHERE relname IN ('courses', 'reviewers', 'review_logs', 'admin_uids')
 -- AND relnamespace = 'public'::regnamespace;
+--
+-- -- 查看管理员 uid 列表
+-- SELECT * FROM admin_uids;
 -- ============================================================

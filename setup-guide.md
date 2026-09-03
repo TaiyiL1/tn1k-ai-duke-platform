@@ -72,14 +72,88 @@ CREATE TABLE IF NOT EXISTS review_logs (
   submitted_at TEXT
 );
 
--- 启用 RLS（行级安全）并设置策略（允许 anon key 读写）
+-- 启用 RLS（行级安全）并配置精细化策略
+-- 管理员端（无 x-reviewer-token 头）：全量读写
+-- 督课官端（携带 x-reviewer-token 头）：仅可访问自己的数据
 ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviewers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow all operations on courses" ON courses FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all operations on reviewers" ON reviewers FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all operations on review_logs" ON review_logs FOR ALL USING (true) WITH CHECK (true);
+-- 辅助函数：从请求头中提取督课官 token
+CREATE OR REPLACE FUNCTION get_reviewer_token()
+RETURNS TEXT AS $$
+BEGIN
+  RETURN current_setting('request.headers', true)::json->>'x-reviewer-token';
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- ===== courses 表策略 =====
+-- 读：管理员全量；督课官仅自己的课程
+CREATE POLICY "courses_select_policy" ON courses
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token());
+
+-- 增：仅管理员
+CREATE POLICY "courses_insert_policy" ON courses
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL);
+
+-- 改：管理员全量；督课官仅改自己的且不能改 reviewer_token
+CREATE POLICY "courses_update_policy" ON courses
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token())
+  WITH CHECK (get_reviewer_token() IS NULL OR (reviewer_token = get_reviewer_token() AND reviewer_token = OLD.reviewer_token));
+
+-- 删：仅管理员
+CREATE POLICY "courses_delete_policy" ON courses
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);
+
+-- ===== reviewers 表策略 =====
+-- 读：管理员全量；督课官仅自己
+CREATE POLICY "reviewers_select_policy" ON reviewers
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token());
+
+-- 增：仅管理员
+CREATE POLICY "reviewers_insert_policy" ON reviewers
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL);
+
+-- 改：管理员全量；督课官仅改自己的且不能改 token
+CREATE POLICY "reviewers_update_policy" ON reviewers
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token())
+  WITH CHECK (get_reviewer_token() IS NULL OR (token = get_reviewer_token() AND token = OLD.token));
+
+-- 删：仅管理员
+CREATE POLICY "reviewers_delete_policy" ON reviewers
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);
+
+-- ===== review_logs 表策略 =====
+-- 读：仅管理员（督课官不能查看所有日志）
+CREATE POLICY "review_logs_select_policy" ON review_logs
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL);
+
+-- 增：管理员全量；督课官仅能写自己的记录
+CREATE POLICY "review_logs_insert_policy" ON review_logs
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL OR reviewer_name = (SELECT reviewer_name FROM reviewers WHERE token = get_reviewer_token() LIMIT 1));
+
+-- 改：仅管理员
+CREATE POLICY "review_logs_update_policy" ON review_logs
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL);
+
+-- 删：仅管理员
+CREATE POLICY "review_logs_delete_policy" ON review_logs
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);
 ```
 
 4. 执行成功后，左侧 **Table Editor** 中应出现 `courses`、`reviewers`、`review_logs` 三张表
@@ -109,7 +183,13 @@ CREATE POLICY "Allow all operations on review_logs" ON review_logs FOR ALL USING
 A: 请确认已按第二步执行建表 SQL。在 Supabase 的 Table Editor 中检查是否存在三张表。
 
 ### Q: 提示"权限不足"或 RLS 相关错误？
-A: 请确认已执行 SQL 中的 `CREATE POLICY` 语句，允许 anon key 读写所有表。
+A: 请确认已执行 SQL 中的全部 `CREATE POLICY` 语句。本系统采用精细化 RLS 策略：
+- 管理员端：使用标准 anon key，请求不携带 `x-reviewer-token` 头 → 全量读写
+- 督课官端：请求自动携带 `x-reviewer-token: <token>` 头 → RLS 仅放行匹配 token 的数据行
+- 如督课官端报错"new row violates row-level security policy"，请检查 token 是否正确匹配
+
+### Q: 如何从旧版本升级到新的 RLS 策略？
+A: 如果已使用旧版建表 SQL（Allow all operations），可执行 `docs/rls-policy.sql` 中的迁移脚本进行升级。该脚本会先删除旧的全开放策略，再创建精细化策略。
 
 ### Q: 督课官链接打不开？
 A: 督课官链接格式为 `你的域名/index.html#reviewer/xxx-token`。确保链接完整复制，且 token 部分没有被截断。
@@ -128,7 +208,13 @@ A: 可通过管理员页面的「导出中心」将数据导出为 Excel 文件�
 
 ## 七、安全说明
 
-- `anon key` 是公开的 API key，可以安全地在前端使用
-- RLS 策略已配置为允许 anon key 完全读写，适合内部工具使用
-- 如需更高安全性，可修改 RLS 策略限制特定操作
+- `anon key`（或 publishable key）是公开的 API key，可以安全地在前端使用
+- RLS（行级安全）策略已精细配置，确保数据访问隔离：
+  - **管理员端**：使用标准请求 → 全量读写三张表
+  - **督课官端**：请求自动携带 `x-reviewer-token` 自定义请求头 → RLS 强制隔离：
+    - courses：仅能读取和修改 `reviewer_token` 等于自己 token 的课程，且不能修改 `reviewer_token` 字段
+    - reviewers：仅能读取和修改自己的督课官资料（`token` 匹配），且不能修改 `token` 字段
+    - review_logs：仅能新增自己名字的督课记录，不能读取或修改任何日志
+- 管理员端的管理员口令（childhood2024）属于前端保护，管理员为可信角色
 - 建议定期通过导出功能备份数据
+- 如需更高强度的身份隔离，可引入 Supabase Auth 的 authenticated 角色或 Edge Functions 中转数据访问

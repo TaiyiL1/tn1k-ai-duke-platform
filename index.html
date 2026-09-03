@@ -279,12 +279,19 @@ let dbReady = false;
 let dbCache = { courses: [], reviewers: [], logs: [] };
 let dbLoading = false;
 
-function initSupabase() {
+function initSupabase(reviewerToken) {
   const url = localStorage.getItem('dudao_sb_url');
   const key = localStorage.getItem('dudao_sb_key');
   if(url && key) {
     try {
-      sbClient = window.supabase.createClient(url, key);
+      const options = {};
+      // 督课官端携带 x-reviewer-token 请求头，RLS 据此限制数据访问范围
+      if(reviewerToken) {
+        options.global = {
+          headers: { 'x-reviewer-token': reviewerToken }
+        };
+      }
+      sbClient = window.supabase.createClient(url, key, options);
       return true;
     } catch(e) {
       console.error('Supabase init error:', e);
@@ -389,14 +396,88 @@ CREATE TABLE IF NOT EXISTS review_logs (
   submitted_at TEXT
 );
 
--- 启用 RLS 并设置策略（允许 anon key 读写）
+-- 启用 RLS（行级安全）并配置精细化策略
+-- 管理员端（无 x-reviewer-token 头）：全量读写
+-- 督课官端（携带 x-reviewer-token 头）：仅可访问自己的数据
 ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviewers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow all operations on courses" ON courses FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all operations on reviewers" ON reviewers FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all operations on review_logs" ON review_logs FOR ALL USING (true) WITH CHECK (true);`;
+-- 辅助函数：从请求头中提取督课官 token
+CREATE OR REPLACE FUNCTION get_reviewer_token()
+RETURNS TEXT AS $$
+BEGIN
+  RETURN current_setting('request.headers', true)::json->>'x-reviewer-token';
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- ===== courses 表策略 =====
+-- 读：管理员全量；督课官仅自己的课程
+CREATE POLICY "courses_select_policy" ON courses
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token());
+
+-- 增：仅管理员
+CREATE POLICY "courses_insert_policy" ON courses
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL);
+
+-- 改：管理员全量；督课官仅改自己的且不能改 reviewer_token
+CREATE POLICY "courses_update_policy" ON courses
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL OR reviewer_token = get_reviewer_token())
+  WITH CHECK (get_reviewer_token() IS NULL OR (reviewer_token = get_reviewer_token() AND reviewer_token = OLD.reviewer_token));
+
+-- 删：仅管理员
+CREATE POLICY "courses_delete_policy" ON courses
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);
+
+-- ===== reviewers 表策略 =====
+-- 读：管理员全量；督课官仅自己
+CREATE POLICY "reviewers_select_policy" ON reviewers
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token());
+
+-- 增：仅管理员
+CREATE POLICY "reviewers_insert_policy" ON reviewers
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL);
+
+-- 改：管理员全量；督课官仅改自己的且不能改 token
+CREATE POLICY "reviewers_update_policy" ON reviewers
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL OR token = get_reviewer_token())
+  WITH CHECK (get_reviewer_token() IS NULL OR (token = get_reviewer_token() AND token = OLD.token));
+
+-- 删：仅管理员
+CREATE POLICY "reviewers_delete_policy" ON reviewers
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);
+
+-- ===== review_logs 表策略 =====
+-- 读：仅管理员（督课官不能查看所有日志）
+CREATE POLICY "review_logs_select_policy" ON review_logs
+  FOR SELECT
+  USING (get_reviewer_token() IS NULL);
+
+-- 增：管理员全量；督课官仅能写自己的记录
+CREATE POLICY "review_logs_insert_policy" ON review_logs
+  FOR INSERT
+  WITH CHECK (get_reviewer_token() IS NULL OR reviewer_name = (SELECT reviewer_name FROM reviewers WHERE token = get_reviewer_token() LIMIT 1));
+
+-- 改：仅管理员
+CREATE POLICY "review_logs_update_policy" ON review_logs
+  FOR UPDATE
+  USING (get_reviewer_token() IS NULL);
+
+-- 删：仅管理员
+CREATE POLICY "review_logs_delete_policy" ON review_logs
+  FOR DELETE
+  USING (get_reviewer_token() IS NULL);`;
 
 function renderConfigPage(errorMsg) {
   const savedUrl = localStorage.getItem('dudao_sb_url') || '';
@@ -536,8 +617,10 @@ window.saveConfig = async function() {
   if(publicUrl) localStorage.setItem('dudao_public_url', publicUrl);
   else localStorage.removeItem('dudao_public_url');
   statusEl.innerHTML = '<div class="config-status success">✅ 配置已保存，正在初始化...</div>';
-  // Re-init
-  if(initSupabase()) {
+  // Re-init（督课官端携带 token header，确保 RLS 正确过滤）
+  const route = getRoute();
+  const reviewerToken = route.page === 'reviewer' ? route.token : null;
+  if(initSupabase(reviewerToken)) {
     const { error } = await sbClient.from('courses').select('course_id').limit(1);
     if(error) {
       statusEl.innerHTML = '<div class="config-status error">配置已保存，但数据库连接失败：' + error.message + '</div>';
@@ -1950,10 +2033,13 @@ function applyConfigFromUrl() {
 // =========== INIT ===========
 async function init() {
   const route = getRoute();
-  if(route.page === 'reviewer' && !initSupabase()) {
+  // 督课官端使用 token 初始化 sbClient，RLS 据此限制数据访问范围
+  const reviewerToken = route.page === 'reviewer' ? route.token : null;
+
+  if(route.page === 'reviewer' && !initSupabase(reviewerToken)) {
     applyConfigFromUrl();
   }
-  if(!initSupabase()) {
+  if(!initSupabase(reviewerToken)) {
     renderConfigPage();
     return;
   }

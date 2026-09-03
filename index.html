@@ -1,0 +1,1977 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI辅助督课工作台 - 童年一课云教室</title>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --color-bg:#F6F8FB;
+  --color-surface:#FFFFFF;
+  --color-text:#152033;
+  --color-text-secondary:#637089;
+  --color-text-muted:#8C95A6;
+  --color-primary:#1677ff;
+  --color-primary-hover:#4096ff;
+  --color-primary-bg:#e6f4ff;
+  --color-border:#E6EAF2;
+  --color-border-light:#F0F3F8;
+  --color-success:#16A37B;
+  --color-success-bg:#f0fdf4;
+  --color-warning:#E6A23C;
+  --color-warning-bg:#fdf6ec;
+  --color-danger:#E53935;
+  --color-danger-bg:#fef2f2;
+  --color-info:#1677ff;
+  --color-info-bg:#e6f4ff;
+  --font-sans:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius-sm:4px;
+  --radius-md:8px;
+  --radius-lg:12px;
+  --shadow-sm:0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg:0 4px 16px rgba(0,0,0,0.08);
+  --spacing-xs:4px;
+  --spacing-sm:8px;
+  --spacing-md:16px;
+  --spacing-lg:24px;
+  --spacing-xl:32px;
+}
+html{font-size:14px;line-height:1.6}
+body{font-family:var(--font-sans);background:var(--color-bg);color:var(--color-text);min-height:100vh}
+a{color:var(--color-primary);text-decoration:none}
+a:hover{text-decoration:underline}
+button{font-family:inherit;cursor:pointer;border:none;outline:none;font-size:inherit}
+button:focus-visible{box-shadow:0 0 0 2px var(--color-primary)}
+input,select,textarea{font-family:inherit;font-size:inherit;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--color-primary);box-shadow:0 0 0 2px var(--color-primary-bg)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--color-border)}
+th{font-weight:600;color:var(--color-text-secondary);background:var(--color-bg);position:sticky;top:0;z-index:1;font-size:13px;white-space:nowrap}
+td{font-size:13px}
+tbody tr:hover{background:var(--color-primary-bg)}
+.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:500;white-space:nowrap}
+.tag-green{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
+.tag-blue{background:#e6f4ff;color:#1677ff;border:1px solid #bae0ff}
+.tag-orange{background:#fff7e6;color:#d46b08;border:1px solid #ffd591}
+.tag-red{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+.tag-gray{background:#f5f5f5;color:#8c8c8c;border:1px solid #e8e8e8}
+.tag-yellow{background:#fefce8;color:#a16207;border:1px solid #fde68a}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;transition:all .15s ease;border:1px solid transparent}
+.btn-primary{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+.btn-primary:hover{background:var(--color-primary-hover);border-color:var(--color-primary-hover)}
+.btn-default{background:var(--color-surface);color:var(--color-text);border-color:var(--color-border)}
+.btn-default:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.btn-success{background:var(--color-success);color:#fff}
+.btn-success:hover{background:#15803d}
+.btn-danger{background:var(--color-danger);color:#fff}
+.btn-danger:hover{background:#c62828}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-link{background:none;color:var(--color-primary);padding:4px 8px;border:none}
+.btn-link:hover{background:var(--color-primary-bg)}
+.form-group{margin-bottom:16px}
+.form-label{display:block;font-size:13px;font-weight:500;color:var(--color-text-secondary);margin-bottom:6px}
+.form-input,.form-select,.form-textarea{width:100%;padding:8px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px;background:var(--color-surface);color:var(--color-text);transition:border-color .15s}
+.form-textarea{min-height:80px;resize:vertical;line-height:1.6}
+.card{background:var(--color-surface);border-radius:var(--radius-md);box-shadow:var(--shadow-sm);border:1px solid var(--color-border-light)}
+.card-header{padding:16px 20px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between}
+.card-header h3{font-size:15px;font-weight:600}
+.card-body{padding:20px}
+
+/* Header */
+.app-header{background:var(--color-surface);border-bottom:1px solid var(--color-border);padding:0 var(--spacing-lg);height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:var(--shadow-sm)}
+.app-header h1{font-size:16px;font-weight:700;color:var(--color-text);display:flex;align-items:center;gap:8px}
+.app-header h1 .logo-icon{width:28px;height:28px;background:var(--color-primary);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700}
+.header-right{display:flex;align-items:center;gap:12px}
+.role-badge{background:var(--color-primary-bg);color:var(--color-primary);padding:4px 12px;border-radius:12px;font-size:12px;font-weight:500}
+
+/* Stats */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--spacing-md);margin-bottom:var(--spacing-lg)}
+.stat-card{background:var(--color-surface);border-radius:var(--radius-md);padding:16px 20px;border:1px solid var(--color-border-light);box-shadow:var(--shadow-sm)}
+.stat-card .stat-label{font-size:12px;color:var(--color-text-muted);margin-bottom:4px}
+.stat-card .stat-value{font-size:28px;font-weight:700;font-family:var(--font-mono);line-height:1.2}
+.stat-card .stat-value.text-primary{color:var(--color-primary)}
+.stat-card .stat-value.text-success{color:var(--color-success)}
+.stat-card .stat-value.text-warning{color:var(--color-warning)}
+.stat-card .stat-value.text-danger{color:var(--color-danger)}
+
+/* Tabs */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--color-border);margin-bottom:var(--spacing-lg)}
+.tab-btn{padding:10px 20px;font-size:13px;font-weight:500;color:var(--color-text-secondary);background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;white-space:nowrap}
+.tab-btn:hover{color:var(--color-primary)}
+.tab-btn.active{color:var(--color-primary);border-bottom-color:var(--color-primary)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* Filter bar */
+.filter-bar{display:flex;flex-wrap:wrap;gap:var(--spacing-sm);margin-bottom:var(--spacing-md);align-items:center}
+.filter-bar .form-select{width:auto;min-width:120px;padding:6px 10px;font-size:12px}
+.filter-bar .form-input{width:auto;min-width:120px;padding:6px 10px;font-size:12px}
+
+/* Upload area */
+.upload-area{border:2px dashed var(--color-border);border-radius:var(--radius-lg);padding:48px 24px;text-align:center;transition:all .15s;cursor:pointer;background:var(--color-surface)}
+.upload-area:hover,.upload-area.dragover{border-color:var(--color-primary);background:var(--color-primary-bg)}
+.upload-area .upload-icon{font-size:40px;margin-bottom:12px;color:var(--color-text-muted)}
+.upload-area .upload-text{font-size:14px;color:var(--color-text-secondary);margin-bottom:4px}
+.upload-area .upload-hint{font-size:12px;color:var(--color-text-muted)}
+
+/* Preview table */
+.preview-table-wrap{max-height:400px;overflow:auto;border:1px solid var(--color-border);border-radius:var(--radius-md);margin:16px 0}
+.preview-table-wrap table{font-size:12px}
+.preview-table-wrap th{font-size:11px}
+
+/* Table wrapper */
+.table-wrap{overflow-x:auto;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)}
+
+/* Pagination */
+.pagination{display:flex;align-items:center;justify-content:space-between;padding:12px 0;font-size:13px;color:var(--color-text-secondary)}
+.pagination-btns{display:flex;gap:4px}
+.pagination-btns button{width:32px;height:32px;border-radius:var(--radius-sm);border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);font-size:13px;display:flex;align-items:center;justify-content:center}
+.pagination-btns button:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.pagination-btns button.active{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+.pagination-btns button:disabled{opacity:.4;cursor:not-allowed}
+
+/* Task assignment */
+.assign-layout{display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-lg)}
+.assign-panel{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md)}
+.assign-panel-header{padding:12px 16px;border-bottom:1px solid var(--color-border);font-weight:600;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.assign-list{max-height:400px;overflow-y:auto;padding:8px}
+.assign-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px}
+.assign-item:hover{background:var(--color-primary-bg)}
+.assign-item.selected{background:var(--color-primary-bg);border:1px solid var(--color-primary)}
+.assign-actions{display:flex;justify-content:center;padding:var(--spacing-md);gap:var(--spacing-sm)}
+.reviewer-item{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--color-border-light)}
+.reviewer-item:last-child{border-bottom:none}
+.reviewer-info{flex:1}
+.reviewer-info .name{font-weight:600;font-size:14px}
+.reviewer-info .detail{font-size:12px;color:var(--color-text-muted);margin-top:2px}
+
+/* Reviewer page */
+.reviewer-header{background:var(--color-surface);border-bottom:1px solid var(--color-border);padding:16px var(--spacing-lg)}
+.reviewer-header h1{font-size:18px;font-weight:700}
+.reviewer-header p{color:var(--color-text-secondary);font-size:13px;margin-top:4px}
+.reviewer-content{max-width:1200px;margin:0 auto;padding:var(--spacing-lg)}
+.course-detail{max-width:900px;margin:0 auto}
+.course-detail .back-btn{margin-bottom:var(--spacing-md)}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--spacing-md)}
+.info-item{padding:12px 0}
+.info-item .info-label{font-size:12px;color:var(--color-text-muted);margin-bottom:4px}
+.info-item .info-value{font-size:14px;font-weight:500}
+.score-display{font-size:48px;font-weight:800;font-family:var(--font-mono);line-height:1}
+.score-display.score-high{color:var(--color-success)}
+.score-display.score-mid{color:var(--color-primary)}
+.score-display.score-low{color:var(--color-warning)}
+.score-display.score-bad{color:var(--color-danger)}
+.alert-box{padding:16px 20px;border-radius:var(--radius-md);margin:var(--spacing-md) 0;font-size:13px;line-height:1.8}
+.alert-box.alert-warning{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+.alert-box.alert-warning strong{color:#78350f}
+.switch-group{display:flex;align-items:center;gap:8px}
+.switch{position:relative;width:40px;height:22px;display:inline-block}
+.switch input{opacity:0;width:0;height:0}
+.switch .slider{position:absolute;inset:0;background:#d1d5db;border-radius:11px;transition:.2s;cursor:pointer}
+.switch .slider::before{content:'';position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.switch input:checked+.slider{background:var(--color-primary)}
+.switch input:checked+.slider::before{transform:translateX(18px)}
+.link-box{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:var(--color-primary-bg);color:var(--color-primary);border-radius:var(--radius-sm);font-size:13px;font-weight:500;margin-top:8px}
+.link-box:hover{text-decoration:none}
+.copy-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface);color:var(--color-text-secondary);font-size:12px;cursor:pointer}
+.copy-btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.token-display{font-family:var(--font-mono);font-size:11px;color:var(--color-text-muted);word-break:break-all}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}
+.modal{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:100%;max-width:600px;max-height:90vh;overflow-y:auto}
+.modal-header{padding:16px 20px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;justify-content:space-between}
+.modal-header h3{font-size:16px;font-weight:600}
+.modal-close{width:28px;height:28px;border-radius:var(--radius-sm);border:none;background:none;font-size:18px;color:var(--color-text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center}
+.modal-close:hover{background:var(--color-bg)}
+.modal-body{padding:20px}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;gap:8px}
+.empty-state{text-align:center;padding:48px 24px;color:var(--color-text-muted)}
+.empty-state .empty-icon{font-size:48px;margin-bottom:12px}
+.empty-state p{font-size:14px}
+.export-options{display:grid;gap:var(--spacing-md)}
+.export-item{display:flex;align-items:center;justify-content:space-between;padding:16px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)}
+.export-item .export-info h4{font-size:14px;font-weight:600;margin-bottom:4px}
+.export-item .export-info p{font-size:12px;color:var(--color-text-muted)}
+.main-content{padding:var(--spacing-lg);max-width:1400px;margin:0 auto}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-md)}
+@media(max-width:768px){
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .assign-layout{grid-template-columns:1fr}
+  .two-col{grid-template-columns:1fr}
+  .filter-bar{flex-direction:column}
+  .filter-bar .form-select,.filter-bar .form-input{width:100%}
+}
+@media print{
+  .app-header,.tabs,.filter-bar,.btn,.upload-area{display:none!important}
+  body{background:#fff}
+  .card{box-shadow:none;border:1px solid #ddd}
+}
+.checkbox-cell{width:40px;text-align:center}
+.sort-bar{display:flex;gap:8px;align-items:center;margin-bottom:var(--spacing-sm);font-size:12px;color:var(--color-text-secondary)}
+.sort-bar button{font-size:12px;padding:4px 10px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface);color:var(--color-text-secondary)}
+.sort-bar button:hover,.sort-bar button.active{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-primary-bg)}
+.reviewer-card{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border:1px solid var(--color-border);border-radius:var(--radius-md);margin-bottom:var(--spacing-sm);background:var(--color-surface);transition:border-color .15s}
+.reviewer-card:hover{border-color:var(--color-primary)}
+.status-select{padding:4px 8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:12px}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Config Page Styles */
+.config-page{max-width:640px;margin:60px auto;padding:0 var(--spacing-lg)}
+.config-page .config-title{font-size:22px;font-weight:700;text-align:center;margin-bottom:8px}
+.config-page .config-subtitle{text-align:center;color:var(--color-text-secondary);font-size:14px;margin-bottom:32px}
+.config-page .config-card{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);border:1px solid var(--color-border-light);padding:32px}
+.config-page .config-actions{display:flex;gap:12px;justify-content:center;margin-top:24px}
+.config-page .config-status{text-align:center;padding:12px;border-radius:var(--radius-sm);margin-top:16px;font-size:13px}
+.config-page .config-status.success{background:var(--color-success-bg);color:var(--color-success)}
+.config-page .config-status.error{background:var(--color-danger-bg);color:var(--color-danger)}
+.config-page .help-section{margin-top:24px}
+.config-page .help-toggle{cursor:pointer;color:var(--color-primary);font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px;user-select:none}
+.config-page .help-toggle:hover{text-decoration:underline}
+.config-page .help-content{display:none;margin-top:16px}
+.config-page .help-content.open{display:block}
+.config-page .help-step{padding:12px 0;border-bottom:1px solid var(--color-border-light);font-size:13px;line-height:1.8}
+.config-page .help-step:last-child{border-bottom:none}
+.config-page .help-step strong{color:var(--color-text)}
+.config-page .sql-block{position:relative;background:#1e1e2e;color:#cdd6f4;border-radius:var(--radius-md);padding:16px;margin:12px 0;font-family:var(--font-mono);font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre}
+.config-page .sql-copy-btn{position:absolute;top:8px;right:8px;padding:4px 12px;border-radius:var(--radius-sm);background:rgba(255,255,255,0.1);color:#cdd6f4;border:1px solid rgba(255,255,255,0.2);font-size:11px;cursor:pointer}
+.config-page .sql-copy-btn:hover{background:rgba(255,255,255,0.2)}
+
+/* Connection status indicator */
+.db-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--color-text-muted);padding:2px 10px;border-radius:12px;background:var(--color-bg)}
+.db-status .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.db-status .dot.connected{background:#16a34a}
+.db-status .dot.disconnected{background:#dc2626}
+.db-status .dot.loading{background:#eab308;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Loading overlay */
+.loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;z-index:2000;flex-direction:column;gap:12px}
+.loading-spinner{width:36px;height:36px;border:3px solid var(--color-border);border-top-color:var(--color-primary);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{font-size:14px;color:var(--color-text-secondary)}
+
+/* Reconfig button in header */
+.btn-config{background:none;border:1px solid var(--color-border);color:var(--color-text-muted);padding:4px 10px;border-radius:var(--radius-sm);font-size:11px;cursor:pointer}
+.btn-config:hover{border-color:var(--color-primary);color:var(--color-primary)}
+</style>
+</head>
+<body>
+<h1 style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)">AI辅助督课工作台 - 童年一课云教室</h1>
+<main id="app"></main>
+
+<script>
+// =========== SUPABASE DATA LAYER ===========
+let sbClient = null;
+let dbReady = false;
+let dbCache = { courses: [], reviewers: [], logs: [] };
+let dbLoading = false;
+
+function initSupabase() {
+  const url = localStorage.getItem('dudao_sb_url');
+  const key = localStorage.getItem('dudao_sb_key');
+  if(url && key) {
+    try {
+      sbClient = window.supabase.createClient(url, key);
+      return true;
+    } catch(e) {
+      console.error('Supabase init error:', e);
+      return false;
+    }
+  }
+  return false;
+}
+
+async function loadAllData() {
+  if(!sbClient) return dbCache;
+  try {
+    const [coursesRes, reviewersRes, logsRes] = await Promise.all([
+      sbClient.from('courses').select('*').order('created_at', {ascending:false}),
+      sbClient.from('reviewers').select('*'),
+      sbClient.from('review_logs').select('*').order('submitted_at', {ascending:false})
+    ]);
+    dbCache.courses = coursesRes.data || [];
+    dbCache.reviewers = reviewersRes.data || [];
+    dbCache.logs = logsRes.data || [];
+  } catch(e) {
+    console.error('loadAllData error:', e);
+  }
+  return dbCache;
+}
+
+// Sync cache readers
+function getCourses() { return dbCache.courses; }
+function getReviewers() { return dbCache.reviewers; }
+function getLogs() { return dbCache.logs; }
+
+// Async refresh
+async function refreshData() {
+  if(!sbClient) return;
+  await loadAllData();
+}
+
+function uuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random()*16|0;
+    return (c==='x'? r : (r&0x3|0x8)).toString(16);
+  });
+}
+function now() { return new Date().toISOString(); }
+function formatDate(iso) {
+  if(!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'});
+}
+
+// =========== CONFIG PAGE ===========
+const SETUP_SQL = `-- courses 课程表
+CREATE TABLE IF NOT EXISTS courses (
+  course_id TEXT PRIMARY KEY,
+  course_name TEXT,
+  subject TEXT,
+  teacher_name TEXT,
+  teacher_id TEXT,
+  class_name TEXT,
+  school_name TEXT,
+  lesson_time TEXT,
+  duration INTEGER,
+  ai_score NUMERIC,
+  ai_report_url TEXT,
+  replay_url TEXT,
+  ai_layer TEXT,
+  final_layer TEXT DEFAULT '',
+  need_review BOOLEAN DEFAULT true,
+  need_followup BOOLEAN DEFAULT false,
+  assigned_reviewer TEXT DEFAULT '',
+  reviewer_token TEXT DEFAULT '',
+  review_status TEXT DEFAULT '未分配',
+  teacher_feedback TEXT DEFAULT '',
+  internal_notes TEXT DEFAULT '',
+  created_at TEXT,
+  updated_at TEXT
+);
+
+-- reviewers 督课官表
+CREATE TABLE IF NOT EXISTS reviewers (
+  reviewer_id TEXT PRIMARY KEY,
+  reviewer_name TEXT,
+  subject TEXT,
+  token TEXT UNIQUE NOT NULL,
+  max_tasks INTEGER DEFAULT 20,
+  assigned_count INTEGER DEFAULT 0,
+  completed_count INTEGER DEFAULT 0,
+  status TEXT DEFAULT '启用'
+);
+
+-- review_logs 督课记录表
+CREATE TABLE IF NOT EXISTS review_logs (
+  log_id TEXT PRIMARY KEY,
+  course_id TEXT,
+  reviewer_name TEXT,
+  final_layer TEXT,
+  need_followup BOOLEAN DEFAULT false,
+  has_risk BOOLEAN DEFAULT false,
+  risk_type TEXT DEFAULT '',
+  teacher_feedback TEXT DEFAULT '',
+  internal_notes TEXT DEFAULT '',
+  submitted_at TEXT
+);
+
+-- 启用 RLS 并设置策略（允许 anon key 读写）
+ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviewers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all operations on courses" ON courses FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations on reviewers" ON reviewers FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations on review_logs" ON review_logs FOR ALL USING (true) WITH CHECK (true);`;
+
+function renderConfigPage(errorMsg) {
+  const savedUrl = localStorage.getItem('dudao_sb_url') || '';
+  const savedKey = localStorage.getItem('dudao_sb_key') || '';
+  const savedPublicUrl = localStorage.getItem('dudao_public_url') || '';
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      <div class="header-right">
+        <span class="role-badge">数据库配置</span>
+      </div>
+    </header>
+    <div class="config-page">
+      <div class="config-title">🗄️ 数据库连接配置</div>
+      <div class="config-subtitle">本系统使用 Supabase 云端数据库存储数据，请先配置数据库连接信息。<br>配置完成后，管理员端与督课官端将共享同一份云端数据。</div>
+
+      <div class="config-card">
+        <div class="form-group">
+          <label class="form-label">Supabase Project URL</label>
+          <input class="form-input" id="cfgUrl" placeholder="https://xxxxx.supabase.co" value="${savedUrl}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Anon / Public Key</label>
+          <input class="form-input" id="cfgKey" placeholder="eyJhbGciOiJIUz..." value="${savedKey}" style="font-family:var(--font-mono);font-size:12px">
+        </div>
+        <div class="form-group">
+          <label class="form-label">公开访问地址（可选）</label>
+          <input class="form-input" id="cfgPublicUrl" placeholder="如 https://www.coze.cn/s/xxxxx/  留空则使用当前地址" value="${savedPublicUrl || ''}">
+          <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+            填写后，督课官分享链接将使用此地址生成，避免链接被重定向到临时 CDN 地址。
+          </div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn-default" onclick="testConnection()">🔌 测试连接</button>
+          <button class="btn btn-primary" onclick="saveConfig()">💾 保存并进入</button>
+        </div>
+        <div id="configStatus"></div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-toggle" onclick="toggleHelp()">
+          <span id="helpArrow">▶</span> 📖 如何获取 Supabase 配置？点击查看步骤
+        </div>
+        <div class="help-content" id="helpContent">
+          <div class="help-step">
+            <strong>步骤 1：</strong>前往 <a href="https://supabase.com" target="_blank">supabase.com</a> 注册账号并创建一个新项目（免费）。记下项目 URL。
+          </div>
+          <div class="help-step">
+            <strong>步骤 2：</strong>进入项目的 <strong>SQL Editor</strong>，粘贴并执行以下建表 SQL：
+            <div class="sql-block" id="sqlBlock"><button class="sql-copy-btn" onclick="copySql()">📋 复制 SQL</button>${escapeHtml(SETUP_SQL)}</div>
+          </div>
+          <div class="help-step">
+            <strong>步骤 3：</strong>进入 <strong>Settings → API</strong>，复制 <strong>Project URL</strong> 和 <strong>anon/public key</strong>，填入上方输入框。
+          </div>
+          <div class="help-step">
+            <strong>步骤 4：</strong>点击「测试连接」验证配置是否正确，然后点击「保存并进入」。
+          </div>
+        </div>
+      </div>
+
+      ${errorMsg ? '<div class="config-page"><div class="config-status error" style="margin-top:16px">❌ ' + errorMsg + '</div></div>' : ''}
+    </div>
+  `;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.toggleHelp = function() {
+  const content = document.getElementById('helpContent');
+  const arrow = document.getElementById('helpArrow');
+  if(content.classList.contains('open')) {
+    content.classList.remove('open');
+    arrow.textContent = '▶';
+  } else {
+    content.classList.add('open');
+    arrow.textContent = '▼';
+  }
+};
+
+window.copySql = function() {
+  navigator.clipboard.writeText(SETUP_SQL).then(() => {
+    const btn = document.querySelector('.sql-copy-btn');
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => btn.textContent = '📋 复制 SQL', 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = SETUP_SQL;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const btn = document.querySelector('.sql-copy-btn');
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => btn.textContent = '📋 复制 SQL', 2000);
+  });
+};
+
+window.testConnection = async function() {
+  const url = document.getElementById('cfgUrl').value.trim();
+  const key = document.getElementById('cfgKey').value.trim();
+  const statusEl = document.getElementById('configStatus');
+  if(!url || !key) {
+    statusEl.innerHTML = '<div class="config-status error">请填写 Project URL 和 Anon Key</div>';
+    return;
+  }
+  statusEl.innerHTML = '<div class="config-status" style="background:var(--color-warning-bg);color:var(--color-warning)">⏳ 正在测试连接...</div>';
+  try {
+    const testClient = window.supabase.createClient(url, key);
+    const { error } = await testClient.from('courses').select('course_id').limit(1);
+    if(error) {
+      if(error.message.includes('does not exist') || error.message.includes('relation') || error.message.includes('does not exist')) {
+        statusEl.innerHTML = '<div class="config-status error">连接成功，但表不存在。请按照下方步骤先执行建表 SQL。</div>';
+      } else {
+        statusEl.innerHTML = '<div class="config-status error">连接失败：' + error.message + '</div>';
+      }
+    } else {
+      statusEl.innerHTML = '<div class="config-status success">✅ 连接成功！表结构正常。可以保存配置。</div>';
+    }
+  } catch(e) {
+    statusEl.innerHTML = '<div class="config-status error">连接失败：' + e.message + '</div>';
+  }
+};
+
+window.saveConfig = async function() {
+  const url = document.getElementById('cfgUrl').value.trim();
+  const key = document.getElementById('cfgKey').value.trim();
+  const publicUrl = (document.getElementById('cfgPublicUrl').value || '').trim();
+  const statusEl = document.getElementById('configStatus');
+  if(!url || !key) {
+    statusEl.innerHTML = '<div class="config-status error">请填写 Project URL 和 Anon Key</div>';
+    return;
+  }
+  localStorage.setItem('dudao_sb_url', url);
+  localStorage.setItem('dudao_sb_key', key);
+  if(publicUrl) localStorage.setItem('dudao_public_url', publicUrl);
+  else localStorage.removeItem('dudao_public_url');
+  statusEl.innerHTML = '<div class="config-status success">✅ 配置已保存，正在初始化...</div>';
+  // Re-init
+  if(initSupabase()) {
+    const { error } = await sbClient.from('courses').select('course_id').limit(1);
+    if(error) {
+      statusEl.innerHTML = '<div class="config-status error">配置已保存，但数据库连接失败：' + error.message + '</div>';
+      return;
+    }
+    dbReady = true;
+    await loadAllData();
+    showLoading('正在加载数据...');
+    setTimeout(() => { hideLoading(); render(); }, 300);
+  } else {
+    statusEl.innerHTML = '<div class="config-status error">初始化失败，请检查配置</div>';
+  }
+};
+
+// =========== LOADING STATES ===========
+function showLoading(text) {
+  let overlay = document.querySelector('.loading-overlay');
+  if(!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = '<div class="loading-spinner"></div><div class="loading-text">' + (text || '加载中...') + '</div>';
+  overlay.style.display = 'flex';
+}
+
+function hideLoading() {
+  const overlay = document.querySelector('.loading-overlay');
+  if(overlay) overlay.style.display = 'none';
+}
+
+// =========== DB STATUS INDICATOR ===========
+function dbStatusHtml() {
+  if(dbReady && sbClient) {
+    return '<span class="db-status"><span class="dot connected"></span>云端已连接</span>';
+  }
+  return '<span class="db-status"><span class="dot disconnected"></span>未连接</span>';
+}
+
+// =========== AI CLASSIFICATION ===========
+function classifyByAiScore(score, hasReport, hasReplay) {
+  if (!hasReport || !hasReplay) return "异常课";
+  if (score === null || score === undefined || score === "") return "异常课";
+  score = Number(score);
+  if (isNaN(score)) return "异常课";
+  if (score >= 83) return "优秀课候选";
+  if (score >= 72 && score <= 82) return "常规课";
+  if (score <= 71) return "重点提升课候选";
+  return "异常课";
+}
+
+function getLayerTagClass(layer) {
+  const map = {"优秀课候选":"tag-green","常规课":"tag-blue","重点提升课候选":"tag-orange","异常课":"tag-red","重点提升课":"tag-orange","暂停授课建议":"tag-red","清退复审建议":"tag-red"};
+  return map[layer] || "tag-gray";
+}
+
+function getStatusTagClass(status) {
+  const map = {"未分配":"tag-gray","待复核":"tag-blue","复核中":"tag-yellow","已完成":"tag-green","需负责人复审":"tag-red"};
+  return map[status] || "tag-gray";
+}
+
+function getScoreClass(score) {
+  if(score==null||score==='') return 'score-bad';
+  score = Number(score);
+  if(score>=83) return 'score-high';
+  if(score>=72) return 'score-mid';
+  if(score<=71) return 'score-low';
+  return 'score-bad';
+}
+
+// =========== SEED DATA (for Supabase) ===========
+async function seedSampleData() {
+  if(!sbClient) return;
+  showLoading('正在导入示例数据...');
+  try {
+    // Check if data exists
+    const { data: existing } = await sbClient.from('courses').select('course_id').limit(1);
+    if(existing && existing.length > 0) {
+      const proceed = confirm('课程表已有数据，是否清空后导入示例数据？');
+      if(!proceed) { hideLoading(); return; }
+      await sbClient.from('courses').delete().neq('course_id', '');
+      await sbClient.from('reviewers').delete().neq('reviewer_id', '');
+      await sbClient.from('review_logs').delete().neq('log_id', '');
+    }
+
+    const r1 = uuid(), r2 = uuid(), r3 = uuid();
+    const reviewers = [
+      { reviewer_id:'R001', reviewer_name:'张明', subject:'心理健康', token:r1, max_tasks:20, assigned_count:0, completed_count:0, status:'启用' },
+      { reviewer_id:'R002', reviewer_name:'李华', subject:'趣味阅读', token:r2, max_tasks:20, assigned_count:0, completed_count:0, status:'启用' },
+      { reviewer_id:'R003', reviewer_name:'王芳', subject:'美术', token:r3, max_tasks:15, assigned_count:0, completed_count:0, status:'启用' }
+    ];
+    await sbClient.from('reviewers').insert(reviewers);
+
+    const courses = [
+      { course_id:'C001', course_name:'情绪小怪兽', subject:'心理健康', teacher_name:'陈老师', teacher_id:'V101', class_name:'三年级2班', school_name:'阳光小学', lesson_time:'2025-06-10T09:00:00', duration:40, ai_score:91, ai_report_url:'https://example.com/report/c001', replay_url:'https://example.com/replay/c001', ai_layer:'优秀课候选', final_layer:'', need_review:true, need_followup:false, assigned_reviewer:'张明', reviewer_token:r1, review_status:'待复核', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C002', course_name:'猜猜我有多爱你', subject:'趣味阅读', teacher_name:'刘老师', teacher_id:'V102', class_name:'四年级1班', school_name:'希望小学', lesson_time:'2025-06-10T10:00:00', duration:35, ai_score:78, ai_report_url:'https://example.com/report/c002', replay_url:'https://example.com/replay/c002', ai_layer:'常规课', final_layer:'', need_review:true, need_followup:false, assigned_reviewer:'李华', reviewer_token:r2, review_status:'待复核', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C003', course_name:'色彩的魔法', subject:'美术', teacher_name:'王老师', teacher_id:'V103', class_name:'二年级3班', school_name:'春蕾小学', lesson_time:'2025-06-10T14:00:00', duration:30, ai_score:65, ai_report_url:'https://example.com/report/c003', replay_url:'https://example.com/replay/c003', ai_layer:'重点提升课候选', final_layer:'', need_review:true, need_followup:true, assigned_reviewer:'王芳', reviewer_token:r3, review_status:'待复核', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C004', course_name:'我的好朋友', subject:'心理健康', teacher_name:'赵老师', teacher_id:'V104', class_name:'五年级1班', school_name:'育才小学', lesson_time:'2025-06-11T09:00:00', duration:45, ai_score:88, ai_report_url:'https://example.com/report/c004', replay_url:'https://example.com/replay/c004', ai_layer:'优秀课候选', final_layer:'优秀课候选', need_review:false, need_followup:false, assigned_reviewer:'张明', reviewer_token:r1, review_status:'已完成', teacher_feedback:'赵老师您好，本节课整体表现出色...', internal_notes:'课堂互动良好', created_at:now(), updated_at:now() },
+      { course_id:'C005', course_name:'神奇的溶解实验', subject:'趣味科学', teacher_name:'孙老师', teacher_id:'V105', class_name:'三年级1班', school_name:'蓝天小学', lesson_time:'2025-06-11T10:00:00', duration:40, ai_score:75, ai_report_url:'https://example.com/report/c005', replay_url:'https://example.com/replay/c005', ai_layer:'常规课', final_layer:'', need_review:true, need_followup:false, assigned_reviewer:'', reviewer_token:'', review_status:'未分配', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C006', course_name:'Do Re Mi 入门', subject:'音乐', teacher_name:'周老师', teacher_id:'V106', class_name:'一年级2班', school_name:'星辰小学', lesson_time:'2025-06-11T14:00:00', duration:30, ai_score:58, ai_report_url:'https://example.com/report/c006', replay_url:'https://example.com/replay/c006', ai_layer:'重点提升课候选', final_layer:'', need_review:true, need_followup:true, assigned_reviewer:'', reviewer_token:'', review_status:'未分配', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C007', course_name:'折纸小课堂', subject:'美术', teacher_name:'吴老师', teacher_id:'V107', class_name:'四年级2班', school_name:'', lesson_time:'2025-06-12T09:00:00', duration:40, ai_score:null, ai_report_url:'', replay_url:'https://example.com/replay/c007', ai_layer:'异常课', final_layer:'', need_review:true, need_followup:false, assigned_reviewer:'', reviewer_token:'', review_status:'未分配', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C008', course_name:'小王子共读', subject:'趣味阅读', teacher_name:'郑老师', teacher_id:'V108', class_name:'二年级1班', school_name:'晨曦小学', lesson_time:'2025-06-12T10:00:00', duration:35, ai_score:84, ai_report_url:'https://example.com/report/c008', replay_url:'https://example.com/replay/c008', ai_layer:'优秀课候选', final_layer:'', need_review:true, need_followup:false, assigned_reviewer:'李华', reviewer_token:r2, review_status:'复核中', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() },
+      { course_id:'C009', course_name:'节拍与律动', subject:'音乐', teacher_name:'冯老师', teacher_id:'V109', class_name:'三年级3班', school_name:'朝阳小学', lesson_time:'2025-06-12T14:00:00', duration:30, ai_score:70, ai_report_url:'https://example.com/report/c009', replay_url:'https://example.com/replay/c009', ai_layer:'重点提升课候选', final_layer:'重点提升课', need_review:true, need_followup:true, assigned_reviewer:'王芳', reviewer_token:r3, review_status:'已完成', teacher_feedback:'冯老师您好，本节课整体节奏需要调整...', internal_notes:'学生参与度低', created_at:now(), updated_at:now() },
+      { course_id:'C010', course_name:'自信的力量', subject:'心理健康', teacher_name:'钱老师', teacher_id:'V110', class_name:'一年级1班', school_name:'彩虹小学', lesson_time:'2025-06-13T09:00:00', duration:25, ai_score:45, ai_report_url:'https://example.com/report/c010', replay_url:'https://example.com/replay/c010', ai_layer:'重点提升课候选', final_layer:'', need_review:true, need_followup:true, assigned_reviewer:'', reviewer_token:'', review_status:'未分配', teacher_feedback:'', internal_notes:'', created_at:now(), updated_at:now() }
+    ];
+    await sbClient.from('courses').insert(courses);
+    await loadAllData();
+    hideLoading();
+    alert('示例数据导入成功！');
+    renderAdmin();
+  } catch(e) {
+    hideLoading();
+    alert('导入失败：' + e.message);
+  }
+}
+
+// =========== COLUMN MAPPING ===========
+const COLUMN_MAP = {
+  course_id: ['课程编号','课程id','course_id','编号','课程ID','id'],
+  course_name: ['课程名称','课程名','course_name','课程','课名','name'],
+  subject: ['科目','学科','subject','课程科目'],
+  teacher_name: ['授课老师','老师姓名','teacher_name','教师','老师','teacher'],
+  teacher_id: ['志愿者编号','teacher_id','志愿者','教师编号','编号id'],
+  class_name: ['班级名称','班级','class_name','班名','class'],
+  school_name: ['学校名称','学校','school_name','学校名','school'],
+  lesson_time: ['上课时间','课程时间','lesson_time','时间','date','上课日期'],
+  duration: ['时长','时长(分钟)','duration','分钟','时长分钟'],
+  ai_score: ['AI综合分','AI分数','ai_score','综合分','分数','score','ai分'],
+  ai_report_url: ['AI报告链接','AI报告','ai_report_url','报告链接','report_url','报告url'],
+  replay_url: ['回放链接','回放','replay_url','回放地址','视频链接','replay']
+};
+
+function matchColumn(header) {
+  const h = header.trim().toLowerCase();
+  for(const [field, aliases] of Object.entries(COLUMN_MAP)) {
+    if(aliases.some(a => h === a.toLowerCase() || h.includes(a.toLowerCase()))) return field;
+  }
+  return null;
+}
+
+// =========== ROUTING ===========
+function getRoute() {
+  const hash = location.hash || '#admin';
+  if(hash.startsWith('#reviewer/')) {
+    const tokenPart = hash.replace('#reviewer/','');
+    // 去掉可能跟随的查询参数（如 ?cfg=xxx）
+    const token = tokenPart.split('?')[0].split('&')[0];
+    return { page:'reviewer', token: token };
+  }
+  return { page:'admin' };
+}
+
+// =========== RENDER ENGINE ===========
+const app = document.getElementById('app');
+
+async function render() {
+  const route = getRoute();
+  if(route.page === 'admin') {
+    if(!adminAuthenticated) { renderAdminAuth(); return; }
+    await renderAdmin();
+  }
+  else await renderReviewer(route.token);
+}
+
+// =========== ADMIN AUTH ===========
+let adminAuthenticated = false;
+const DEFAULT_ADMIN_PASSWORD = 'childhood2024';
+function getAdminPassword() { return localStorage.getItem('dudao_admin_pwd') || DEFAULT_ADMIN_PASSWORD; }
+
+function renderAdminAuth(errorMsg) {
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      <div class="header-right">${dbStatusHtml()}<button class="btn-config" onclick="reconfigDb()">⚙️ 数据库</button></div>
+    </header>
+    <div style="max-width:400px;margin:80px auto;text-align:center">
+      <div class="card"><div class="card-body" style="padding:40px 32px">
+        <div style="font-size:48px;margin-bottom:16px">🔐</div>
+        <h2 style="font-size:18px;margin-bottom:8px">管理员身份验证</h2>
+        <p style="color:var(--color-text-secondary);margin-bottom:24px">请输入管理员口令以进入管理后台</p>
+        <div class="form-group"><input class="form-input" id="adminPwdInput" type="password" placeholder="请输入管理员口令" style="text-align:center;font-size:15px;padding:12px" onkeydown="if(event.key==='Enter')window.doAdminAuth()"></div>
+        ${errorMsg ? '<div style="color:var(--color-danger);font-size:13px;margin-bottom:12px">'+errorMsg+'</div>' : ''}
+        <button class="btn btn-primary" onclick="window.doAdminAuth()" style="width:100%">验证并进入</button>
+        <div style="margin-top:16px"><button class="btn-link" onclick="toggleAdminPwdSetting()" style="font-size:12px;color:var(--color-text-muted)">口令设置</button></div>
+        <div id="adminPwdSetting" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border-light)">
+          <div class="form-group" style="margin-bottom:8px"><input class="form-input" id="newAdminPwd" type="password" placeholder="设置新口令（至少4位）" style="font-size:13px"></div>
+          <button class="btn btn-sm btn-default" onclick="saveAdminPwd()">保存新口令</button>
+        </div>
+      </div></div>
+    </div>`;
+}
+
+window.doAdminAuth = function() {
+  const pwd = document.getElementById('adminPwdInput').value;
+  if(pwd === getAdminPassword()) { adminAuthenticated = true; renderAdmin(); }
+  else renderAdminAuth('口令错误，请重试');
+};
+window.toggleAdminPwdSetting = function() {
+  const el = document.getElementById('adminPwdSetting');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+};
+window.saveAdminPwd = function() {
+  const p = document.getElementById('newAdminPwd').value.trim();
+  if(!p) { alert('口令不能为空'); return; }
+  if(p.length < 4) { alert('口令至少 4 个字符'); return; }
+  localStorage.setItem('dudao_admin_pwd', p);
+  alert('口令已更新');
+};
+
+// =========== ADMIN PAGE ===========
+let adminState = { activeTab:'dashboard', filters:{}, sort:'default', page:1, pageSize:15, selectedCourses:new Set() };
+
+async function renderAdmin() {
+  await refreshData();
+  const courses = getCourses();
+  const reviewers = getReviewers();
+
+  const total = courses.length;
+  const excellent = courses.filter(c=>c.ai_layer==='优秀课候选').length;
+  const normal = courses.filter(c=>c.ai_layer==='常规课').length;
+  const improve = courses.filter(c=>c.ai_layer==='重点提升课候选').length;
+  const abnormal = courses.filter(c=>c.ai_layer==='异常课').length;
+  const assigned = courses.filter(c=>c.review_status!=='未分配').length;
+  const completed = courses.filter(c=>c.review_status==='已完成'||c.review_status==='需负责人复审').length;
+
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      <div class="header-right">
+        ${dbStatusHtml()}
+        <button class="btn-config" onclick="reconfigDb()">⚙️ 数据库</button>
+        <span class="role-badge">管理员</span>
+      </div>
+    </header>
+    <div class="main-content">
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">总课程数</div><div class="stat-value text-primary">${total}</div></div>
+        <div class="stat-card"><div class="stat-label">优秀课候选</div><div class="stat-value text-success">${excellent}</div></div>
+        <div class="stat-card"><div class="stat-label">常规课</div><div class="stat-value text-primary">${normal}</div></div>
+        <div class="stat-card"><div class="stat-label">重点提升课候选</div><div class="stat-value text-warning">${improve}</div></div>
+        <div class="stat-card"><div class="stat-label">异常课</div><div class="stat-value text-danger">${abnormal}</div></div>
+        <div class="stat-card"><div class="stat-label">已分配</div><div class="stat-value">${assigned}</div></div>
+        <div class="stat-card"><div class="stat-label">已完成</div><div class="stat-value text-success">${completed}</div></div>
+      </div>
+
+      <div class="tabs" id="adminTabs">
+        <button class="tab-btn ${adminState.activeTab==='dashboard'?'active':''}" data-tab="dashboard">数据概览</button>
+        <button class="tab-btn ${adminState.activeTab==='upload'?'active':''}" data-tab="upload">数据上传</button>
+        <button class="tab-btn ${adminState.activeTab==='courses'?'active':''}" data-tab="courses">课程管理</button>
+        <button class="tab-btn ${adminState.activeTab==='assign'?'active':''}" data-tab="assign">任务分配</button>
+        <button class="tab-btn ${adminState.activeTab==='reviewers'?'active':''}" data-tab="reviewers">督课官管理</button>
+        <button class="tab-btn ${adminState.activeTab==='export'?'active':''}" data-tab="export">导出中心</button>
+      </div>
+
+      <div id="tabContent"></div>
+    </div>
+    <div id="modalContainer"></div>
+  `;
+
+  document.getElementById('adminTabs').addEventListener('click', async e => {
+    if(e.target.classList.contains('tab-btn')) {
+      adminState.activeTab = e.target.dataset.tab;
+      adminState.selectedCourses.clear();
+      await renderAdmin();
+    }
+  });
+
+  renderTabContent();
+}
+
+window.reconfigDb = function() {
+  if(confirm('确定要重新配置数据库连接吗？')) {
+    localStorage.removeItem('dudao_sb_url');
+    localStorage.removeItem('dudao_sb_key');
+    sbClient = null;
+    dbReady = false;
+    renderConfigPage();
+  }
+};
+
+function renderTabContent() {
+  const container = document.getElementById('tabContent');
+  switch(adminState.activeTab) {
+    case 'dashboard': renderDashboardTab(container); break;
+    case 'upload': renderUploadTab(container); break;
+    case 'courses': renderCoursesTab(container); break;
+    case 'assign': renderAssignTab(container); break;
+    case 'reviewers': renderReviewersTab(container); break;
+    case 'export': renderExportTab(container); break;
+  }
+}
+
+// ---- Dashboard Tab ----
+function renderDashboardTab(container) {
+  const courses = getCourses();
+  const layerStats = {
+    '优秀课候选': courses.filter(c=>c.ai_layer==='优秀课候选').length,
+    '常规课': courses.filter(c=>c.ai_layer==='常规课').length,
+    '重点提升课候选': courses.filter(c=>c.ai_layer==='重点提升课候选').length,
+    '异常课': courses.filter(c=>c.ai_layer==='异常课').length
+  };
+  const statusStats = {};
+  ['未分配','待复核','复核中','已完成','需负责人复审'].forEach(s => {
+    statusStats[s] = courses.filter(c=>c.review_status===s).length;
+  });
+
+  container.innerHTML = `
+    <div class="two-col">
+      <div class="card">
+        <div class="card-header"><h3>AI分层分布</h3></div>
+        <div class="card-body">
+          ${Object.entries(layerStats).map(([k,v])=>`
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--color-border-light)">
+              <span class="tag ${getLayerTagClass(k)}">${k}</span>
+              <span style="font-size:20px;font-weight:700;font-family:var(--font-mono)">${v}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>复核状态统计</h3></div>
+        <div class="card-body">
+          ${Object.entries(statusStats).map(([k,v])=>`
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--color-border-light)">
+              <span class="tag ${getStatusTagClass(k)}">${k}</span>
+              <span style="font-size:20px;font-weight:700;font-family:var(--font-mono)">${v}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:16px;text-align:center">
+      <button class="btn btn-default" onclick="if(confirm('⚠️ 测试危险操作：这将清空所有现有课程、督课官和督课记录数据，并导入示例数据。此操作不可恢复！确定要继续吗？'))seedSampleData()" style="border-color:var(--color-danger);color:var(--color-danger)">⚠️ 导入示例数据（测试用，将清空现有数据）</button>
+    </div>
+  `;
+}
+
+// ---- Upload Tab ----
+let uploadState = { parsedData:null, mapping:null, fileName:'' };
+
+function renderUploadTab(container) {
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h3>上传课程数据</h3></div>
+      <div class="card-body">
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon">📁</div>
+          <div class="upload-text">拖拽文件到此处，或点击选择文件</div>
+          <div class="upload-hint">支持 CSV、Excel (.xlsx / .xls) 格式</div>
+          <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display:none">
+        </div>
+        <div id="uploadPreview"></div>
+      </div>
+    </div>
+  `;
+
+  const area = document.getElementById('uploadArea');
+  const input = document.getElementById('fileInput');
+
+  area.addEventListener('click', () => input.click());
+  area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('dragover'); });
+  area.addEventListener('dragleave', () => area.classList.remove('dragover'));
+  area.addEventListener('drop', e => {
+    e.preventDefault();
+    area.classList.remove('dragover');
+    if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  input.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
+}
+
+function handleFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext === 'csv') {
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: result => { showPreview(result.data, result.meta.fields, file.name); }
+    });
+  } else if(ext === 'xlsx' || ext === 'xls') {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(ws, {defval:''});
+      if(data.length) showPreview(data, Object.keys(data[0]), file.name);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+function showPreview(data, headers, fileName) {
+  uploadState.fileName = fileName;
+  uploadState.parsedData = data;
+  const mapping = {};
+  headers.forEach(h => {
+    const field = matchColumn(h);
+    if(field) mapping[h] = field;
+  });
+  uploadState.mapping = mapping;
+
+  const preview = document.getElementById('uploadPreview');
+  const unmapped = headers.filter(h => !mapping[h]);
+  const sampleRows = data.slice(0, 5);
+
+  preview.innerHTML = `
+    <div style="margin-top:20px">
+      <h4 style="font-size:14px;margin-bottom:12px">📋 文件：${fileName}（共 ${data.length} 条记录）</h4>
+      ${unmapped.length ? `<div style="padding:10px 14px;background:var(--color-warning-bg);border:1px solid #fde68a;border-radius:var(--radius-sm);font-size:12px;margin-bottom:12px;color:#92400e">
+        未匹配的列：${unmapped.join('、')}
+      </div>` : ''}
+      <div style="margin-bottom:8px;font-size:13px;font-weight:500">列名匹配结果：</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+        ${Object.entries(mapping).map(([col,field])=>`
+          <span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--color-primary-bg);border-radius:var(--radius-sm);font-size:12px">
+            <strong>${col}</strong> → ${field}
+          </span>
+        `).join('')}
+      </div>
+      <div class="preview-table-wrap">
+        <table>
+          <thead><tr>${headers.map(h=>`<th>${h}${mapping[h]?' ✓':''}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${sampleRows.map(row=>`<tr>${headers.map(h=>`<td>${row[h]||''}</td>`).join('')}</tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-primary" onclick="confirmImport()">确认导入 ${data.length} 条数据</button>
+        <button class="btn btn-default" onclick="cancelUpload()">取消</button>
+      </div>
+    </div>
+  `;
+}
+
+window.confirmImport = async function() {
+  const data = uploadState.parsedData;
+  const mapping = uploadState.mapping;
+  if(!data || !mapping) return;
+
+  const reverseMap = {};
+  Object.entries(mapping).forEach(([col, field]) => { reverseMap[field] = col; });
+
+  const newCourses = [];
+  data.forEach(row => {
+    const get = field => {
+      const col = reverseMap[field];
+      return col ? (row[col] || '').toString().trim() : '';
+    };
+
+    const score = get('ai_score');
+    const numScore = score !== '' ? Number(score) : null;
+    const hasReport = !!get('ai_report_url');
+    const hasReplay = !!get('replay_url');
+
+    const course = {
+      course_id: get('course_id') || 'C' + Date.now() + Math.random().toString(36).substr(2,4),
+      course_name: get('course_name'),
+      subject: get('subject'),
+      teacher_name: get('teacher_name'),
+      teacher_id: get('teacher_id'),
+      class_name: get('class_name'),
+      school_name: get('school_name'),
+      lesson_time: get('lesson_time'),
+      duration: get('duration') ? Number(get('duration')) : null,
+      ai_score: numScore,
+      ai_report_url: get('ai_report_url'),
+      replay_url: get('replay_url'),
+      ai_layer: classifyByAiScore(numScore, hasReport, hasReplay),
+      final_layer: '',
+      need_review: true,
+      need_followup: false,
+      assigned_reviewer: '',
+      reviewer_token: '',
+      review_status: '未分配',
+      teacher_feedback: '',
+      internal_notes: '',
+      created_at: now(),
+      updated_at: now()
+    };
+    newCourses.push(course);
+  });
+
+  showLoading('正在导入数据到云端...');
+  const { error } = await sbClient.from('courses').insert(newCourses);
+  if(error) {
+    hideLoading();
+    if(error.message.includes('network') || error.message.includes('fetch')) {
+      alert('导入失败：网络连接失败，请检查网络');
+    } else {
+      alert('导入失败：' + error.message);
+    }
+    return;
+  }
+  await loadAllData();
+  hideLoading();
+  uploadState = { parsedData:null, mapping:null, fileName:'' };
+  alert('成功导入 ' + data.length + ' 条课程数据！');
+  renderAdmin();
+};
+
+window.cancelUpload = function() {
+  uploadState = { parsedData:null, mapping:null, fileName:'' };
+  document.getElementById('uploadPreview').innerHTML = '';
+};
+
+// ---- Courses Tab ----
+function getFilteredCourses() {
+  let courses = getCourses();
+  const f = adminState.filters;
+  if(f.subject) courses = courses.filter(c=>c.subject===f.subject);
+  if(f.ai_layer) courses = courses.filter(c=>c.ai_layer===f.ai_layer);
+  if(f.final_layer) courses = courses.filter(c=>c.final_layer===f.final_layer);
+  if(f.reviewer) courses = courses.filter(c=>c.assigned_reviewer===f.reviewer);
+  if(f.status) courses = courses.filter(c=>c.review_status===f.status);
+  if(f.followup === 'yes') courses = courses.filter(c=>c.need_followup);
+  if(f.followup === 'no') courses = courses.filter(c=>!c.need_followup);
+  if(f.abnormal === 'yes') courses = courses.filter(c=>c.ai_layer==='异常课');
+
+  const sort = adminState.sort;
+  if(sort === 'score_desc') courses.sort((a,b)=>(b.ai_score||0)-(a.ai_score||0));
+  else if(sort === 'score_asc') courses.sort((a,b)=>(a.ai_score||0)-(b.ai_score||0));
+  else if(sort === 'unhandled') courses.sort((a,b)=>(a.review_status==='未分配'?-1:1)-(b.review_status==='未分配'?-1:1));
+  else if(sort === 'improve_first') courses.sort((a,b)=>(a.ai_layer==='重点提升课候选'?-1:1)-(b.ai_layer==='重点提升课候选'?-1:1));
+  else if(sort === 'abnormal_first') courses.sort((a,b)=>(a.ai_layer==='异常课'?-1:1)-(b.ai_layer==='异常课'?-1:1));
+
+  return courses;
+}
+
+function renderCoursesTab(container) {
+  const courses = getCourses();
+  const reviewers = getReviewers();
+  const subjects = [...new Set(courses.map(c=>c.subject).filter(Boolean))];
+  const layers = ['优秀课候选','常规课','重点提升课候选','异常课'];
+  const finalLayers = ['优秀课候选','常规课','重点提升课','异常课','暂停授课建议','清退复审建议'];
+  const statuses = ['未分配','待复核','复核中','已完成','需负责人复审'];
+  const reviewerNames = reviewers.map(r=>r.reviewer_name);
+
+  const filtered = getFilteredCourses();
+  const totalPages = Math.ceil(filtered.length / adminState.pageSize) || 1;
+  if(adminState.page > totalPages) adminState.page = totalPages;
+  const start = (adminState.page-1)*adminState.pageSize;
+  const pageData = filtered.slice(start, start+adminState.pageSize);
+
+  container.innerHTML = `
+    <div class="filter-bar">
+      <select class="form-select" id="filterSubject">
+        <option value="">全部科目</option>
+        ${subjects.map(s=>`<option value="${s}" ${adminState.filters.subject===s?'selected':''}>${s}</option>`).join('')}
+      </select>
+      <select class="form-select" id="filterLayer">
+        <option value="">全部分层</option>
+        ${layers.map(l=>`<option value="${l}" ${adminState.filters.ai_layer===l?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <select class="form-select" id="filterFinalLayer">
+        <option value="">全部复核分类</option>
+        ${finalLayers.map(l=>`<option value="${l}" ${adminState.filters.final_layer===l?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <select class="form-select" id="filterReviewer">
+        <option value="">全部督课官</option>
+        ${reviewerNames.map(n=>`<option value="${n}" ${adminState.filters.reviewer===n?'selected':''}>${n}</option>`).join('')}
+      </select>
+      <select class="form-select" id="filterStatus">
+        <option value="">全部状态</option>
+        ${statuses.map(s=>`<option value="${s}" ${adminState.filters.status===s?'selected':''}>${s}</option>`).join('')}
+      </select>
+      <select class="form-select" id="filterFollowup">
+        <option value="">全部跟进</option>
+        <option value="yes" ${adminState.filters.followup==='yes'?'selected':''}>重点跟进</option>
+        <option value="no" ${adminState.filters.followup==='no'?'selected':''}>无需跟进</option>
+      </select>
+      <select class="form-select" id="filterAbnormal">
+        <option value="">全部</option>
+        <option value="yes" ${adminState.filters.abnormal==='yes'?'selected':''}>仅异常课</option>
+      </select>
+      <button class="btn btn-sm btn-default" onclick="clearFilters()">清除筛选</button>
+    </div>
+
+    <div class="sort-bar">
+      <span>排序：</span>
+      <button class="${adminState.sort==='default'?'active':''}" onclick="setSort('default')">默认</button>
+      <button class="${adminState.sort==='score_desc'?'active':''}" onclick="setSort('score_desc')">AI分降序</button>
+      <button class="${adminState.sort==='score_asc'?'active':''}" onclick="setSort('score_asc')">AI分升序</button>
+      <button class="${adminState.sort==='unhandled'?'active':''}" onclick="setSort('unhandled')">未处理优先</button>
+      <button class="${adminState.sort==='improve_first'?'active':''}" onclick="setSort('improve_first')">重点提升优先</button>
+      <button class="${adminState.sort==='abnormal_first'?'active':''}" onclick="setSort('abnormal_first')">异常课优先</button>
+    </div>
+
+    <div style="margin-bottom:8px;font-size:13px;color:var(--color-text-secondary)">
+      共 ${filtered.length} 条${adminState.selectedCourses.size ? '，已选 '+adminState.selectedCourses.size+' 条' : ''}
+      ${adminState.selectedCourses.size ? `<button class="btn btn-sm btn-default" style="margin-left:8px" onclick="clearSelection()">取消选择</button>` : ''}
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="checkbox-cell"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
+            <th>编号</th><th>课程名称</th><th>科目</th><th>授课老师</th><th>AI分数</th><th>AI分层</th><th>人工复核分类</th><th>督课官</th><th>状态</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${pageData.length ? pageData.map(c=>`
+            <tr>
+              <td class="checkbox-cell"><input type="checkbox" value="${c.course_id}" ${adminState.selectedCourses.has(c.course_id)?'checked':''} onchange="toggleSelectCourse('${c.course_id}')"></td>
+              <td>${c.course_id}</td>
+              <td style="font-weight:500">${c.course_name||'-'}</td>
+              <td>${c.subject||'-'}</td>
+              <td>${c.teacher_name||'-'}</td>
+              <td style="font-family:var(--font-mono);font-weight:600">${c.ai_score!=null?c.ai_score:'-'}</td>
+              <td><span class="tag ${getLayerTagClass(c.ai_layer)}">${c.ai_layer}</span></td>
+              <td>${c.final_layer ? '<span class="tag '+getLayerTagClass(c.final_layer)+'">'+c.final_layer+'</span>' : '<span style="color:var(--color-text-muted)">-</span>'}</td>
+              <td>${c.assigned_reviewer||'<span style="color:var(--color-text-muted)">-</span>'}</td>
+              <td><span class="tag ${getStatusTagClass(c.review_status)}">${c.review_status}</span></td>
+              <td><button class="btn-link" onclick="viewCourseDetail('${c.course_id}')">查看详情</button></td>
+            </tr>
+          `).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--color-text-muted)">暂无数据</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pagination">
+      <span>第 ${adminState.page} / ${totalPages} 页</span>
+      <div class="pagination-btns">
+        <button ${adminState.page<=1?'disabled':''} onclick="goPage(${adminState.page-1})">‹</button>
+        ${Array.from({length:Math.min(totalPages,7)},(_,i)=>{
+          let p = i+1;
+          if(totalPages>7) {
+            if(adminState.page<=4) p=i+1;
+            else if(adminState.page>=totalPages-3) p=totalPages-6+i;
+            else p=adminState.page-3+i;
+          }
+          return `<button class="${p===adminState.page?'active':''}" onclick="goPage(${p})">${p}</button>`;
+        }).join('')}
+        <button ${adminState.page>=totalPages?'disabled':''} onclick="goPage(${adminState.page+1})">›</button>
+      </div>
+    </div>
+  `;
+
+  ['filterSubject','filterLayer','filterFinalLayer','filterReviewer','filterStatus','filterFollowup','filterAbnormal'].forEach(id=>{
+    document.getElementById(id).addEventListener('change', function() {
+      const keyMap = {filterSubject:'subject',filterLayer:'ai_layer',filterFinalLayer:'final_layer',filterReviewer:'reviewer',filterStatus:'status',filterFollowup:'followup',filterAbnormal:'abnormal'};
+      adminState.filters[keyMap[id]] = this.value;
+      adminState.page = 1;
+      renderAdmin();
+    });
+  });
+}
+
+window.clearFilters = function() { adminState.filters = {}; adminState.page = 1; renderAdmin(); };
+window.setSort = function(s) { adminState.sort = s; renderAdmin(); };
+window.goPage = function(p) { adminState.page = p; renderAdmin(); };
+window.toggleSelectAll = function(el) {
+  const filtered = getFilteredCourses();
+  const start = (adminState.page-1)*adminState.pageSize;
+  const pageData = filtered.slice(start, start+adminState.pageSize);
+  if(el.checked) pageData.forEach(c=>adminState.selectedCourses.add(c.course_id));
+  else pageData.forEach(c=>adminState.selectedCourses.delete(c.course_id));
+  renderAdmin();
+};
+window.toggleSelectCourse = function(id) {
+  if(adminState.selectedCourses.has(id)) adminState.selectedCourses.delete(id);
+  else adminState.selectedCourses.add(id);
+  renderAdmin();
+};
+window.clearSelection = function() { adminState.selectedCourses.clear(); renderAdmin(); };
+
+window.viewCourseDetail = function(courseId) {
+  const courses = getCourses();
+  const c = courses.find(x=>x.course_id===courseId);
+  if(!c) return;
+
+  const modal = document.getElementById('modalContainer');
+  modal.innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:700px">
+        <div class="modal-header">
+          <h3>课程详情 - ${c.course_name}</h3>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="info-grid">
+            <div class="info-item"><div class="info-label">编号</div><div class="info-value">${c.course_id}</div></div>
+            <div class="info-item"><div class="info-label">科目</div><div class="info-value">${c.subject||'-'}</div></div>
+            <div class="info-item"><div class="info-label">授课老师</div><div class="info-value">${c.teacher_name||'-'}</div></div>
+            <div class="info-item"><div class="info-label">志愿者编号</div><div class="info-value">${c.teacher_id||'-'}</div></div>
+            <div class="info-item"><div class="info-label">班级</div><div class="info-value">${c.class_name||'-'}</div></div>
+            <div class="info-item"><div class="info-label">学校</div><div class="info-value">${c.school_name||'-'}</div></div>
+            <div class="info-item"><div class="info-label">上课时间</div><div class="info-value">${formatDate(c.lesson_time)}</div></div>
+            <div class="info-item"><div class="info-label">时长</div><div class="info-value">${c.duration?c.duration+'分钟':'-'}</div></div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:16px 0">
+          <div class="info-grid">
+            <div class="info-item"><div class="info-label">AI分数</div><div class="info-value" style="font-size:24px;font-weight:700;font-family:var(--font-mono);color:${c.ai_score>=83?'var(--color-success)':c.ai_score>=72?'var(--color-primary)':'var(--color-warning)'}">${c.ai_score!=null?c.ai_score:'-'}</div></div>
+            <div class="info-item"><div class="info-label">AI分层</div><div class="info-value"><span class="tag ${getLayerTagClass(c.ai_layer)}">${c.ai_layer}</span></div></div>
+            <div class="info-item"><div class="info-label">人工复核分类</div><div class="info-value">${c.final_layer||'-'}</div></div>
+            <div class="info-item"><div class="info-label">状态</div><div class="info-value"><span class="tag ${getStatusTagClass(c.review_status)}">${c.review_status}</span></div></div>
+            <div class="info-item"><div class="info-label">督课官</div><div class="info-value">${c.assigned_reviewer||'-'}</div></div>
+            <div class="info-item"><div class="info-label">重点跟进</div><div class="info-value">${c.need_followup?'是':'否'}</div></div>
+          </div>
+          ${c.ai_report_url?`<div style="margin-top:8px"><a href="${c.ai_report_url}" target="_blank" rel="noopener noreferrer" class="link-box">📄 查看AI报告</a></div>`:''}
+          ${c.replay_url?`<div style="margin-top:8px"><a href="${c.replay_url}" target="_blank" rel="noopener noreferrer" class="link-box">▶️ 查看回放</a></div>`:''}
+          ${c.teacher_feedback?`<div style="margin-top:16px"><div class="info-label">反馈建议</div><div style="margin-top:4px;padding:12px;background:var(--color-bg);border-radius:var(--radius-sm);font-size:13px;white-space:pre-wrap">${c.teacher_feedback}</div></div>`:''}
+          ${c.internal_notes?`<div style="margin-top:12px"><div class="info-label">内部备注</div><div style="margin-top:4px;padding:12px;background:var(--color-bg);border-radius:var(--radius-sm);font-size:13px;white-space:pre-wrap">${c.internal_notes}</div></div>`:''}
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-default" onclick="closeModal()">关闭</button>
+        </div>
+      </div>
+    </div>
+  `;
+};
+window.closeModal = function() { document.getElementById('modalContainer').innerHTML = ''; };
+
+// ---- Assign Tab ----
+let assignState = { selectedCourseIds: new Set(), selectedReviewerId: null };
+
+function renderAssignTab(container) {
+  const courses = getCourses();
+  const reviewers = getReviewers();
+  const unassigned = courses.filter(c => c.review_status === '未分配');
+  const logs = getLogs();
+
+  container.innerHTML = `
+    <div class="assign-layout">
+      <div class="assign-panel">
+        <div class="assign-panel-header">
+          <span>待分配课程 (${unassigned.length})</span>
+          <button class="btn btn-sm btn-default" onclick="selectAllAssign()">全选</button>
+        </div>
+        <div class="assign-list" id="assignCourseList">
+          ${unassigned.length ? unassigned.map(c=>`
+            <div class="assign-item ${assignState.selectedCourseIds.has(c.course_id)?'selected':''}" onclick="toggleAssignCourse('${c.course_id}')">
+              <input type="checkbox" ${assignState.selectedCourseIds.has(c.course_id)?'checked':''} onclick="event.stopPropagation();toggleAssignCourse('${c.course_id}')">
+              <div>
+                <div style="font-weight:500">${c.course_name}</div>
+                <div style="font-size:12px;color:var(--color-text-muted)">${c.subject} · ${c.teacher_name} · AI分:${c.ai_score!=null?c.ai_score:'-'}</div>
+              </div>
+            </div>
+          `).join('') : '<div style="padding:24px;text-align:center;color:var(--color-text-muted)">暂无待分配课程</div>'}
+        </div>
+      </div>
+      <div class="assign-panel">
+        <div class="assign-panel-header"><span>督课官列表</span></div>
+        <div style="padding:0">
+          ${reviewers.filter(r=>r.status==='启用').map(r=>`
+            <div class="reviewer-item" style="cursor:pointer;${assignState.selectedReviewerId===r.reviewer_id?'background:var(--color-primary-bg);border-left:3px solid var(--color-primary)':''}" onclick="selectReviewer('${r.reviewer_id}')">
+              <div class="reviewer-info">
+                <div class="name">${r.reviewer_name} <span style="font-weight:400;color:var(--color-text-muted);font-size:12px">(${r.subject})</span></div>
+                <div class="detail">已分配 ${r.assigned_count} / 最大 ${r.max_tasks}</div>
+              </div>
+              <div style="font-size:12px;color:var(--color-text-muted)">${r.assigned_count < r.max_tasks ? '可分配' : '已满'}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="assign-actions" style="margin-top:16px">
+      <button class="btn btn-primary" onclick="doAssign()" ${!assignState.selectedReviewerId||!assignState.selectedCourseIds.size?'disabled':''}>
+        分配 ${assignState.selectedCourseIds.size||''} 门课程给 ${assignState.selectedReviewerId?reviewers.find(r=>r.reviewer_id===assignState.selectedReviewerId)?.reviewer_name||'':'督课官'}
+      </button>
+      <button class="btn btn-default" onclick="clearAssignSelection()">清除选择</button>
+    </div>
+
+    <div class="card" style="margin-top:24px">
+      <div class="card-header"><h3>分配记录</h3></div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>课程</th><th>科目</th><th>老师</th><th>督课官</th><th>状态</th></tr></thead>
+            <tbody>
+              ${courses.filter(c=>c.review_status!=='未分配').map(c=>`
+                <tr>
+                  <td>${c.course_name}</td>
+                  <td>${c.subject}</td>
+                  <td>${c.teacher_name}</td>
+                  <td>${c.assigned_reviewer}</td>
+                  <td><span class="tag ${getStatusTagClass(c.review_status)}">${c.review_status}</span></td>
+                </tr>
+              `).join('') || '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-muted)">暂无分配记录</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.toggleAssignCourse = function(id) {
+  if(assignState.selectedCourseIds.has(id)) assignState.selectedCourseIds.delete(id);
+  else assignState.selectedCourseIds.add(id);
+  renderAdmin();
+};
+window.selectAllAssign = function() {
+  const courses = getCourses().filter(c=>c.review_status==='未分配');
+  courses.forEach(c=>assignState.selectedCourseIds.add(c.course_id));
+  renderAdmin();
+};
+window.selectReviewer = function(id) { assignState.selectedReviewerId = id; renderAdmin(); };
+window.clearAssignSelection = function() { assignState.selectedCourseIds.clear(); assignState.selectedReviewerId=null; renderAdmin(); };
+
+window.doAssign = async function() {
+  if(!assignState.selectedReviewerId || !assignState.selectedCourseIds.size) return;
+  const reviewers = getReviewers();
+  const reviewer = reviewers.find(r=>r.reviewer_id===assignState.selectedReviewerId);
+  if(!reviewer) return;
+
+  const courseIds = [...assignState.selectedCourseIds];
+  const assigned = courseIds.length;
+
+  showLoading('正在分配任务...');
+
+  // Update courses in batch
+  const { error: courseErr } = await sbClient.from('courses').update({
+    assigned_reviewer: reviewer.reviewer_name,
+    reviewer_token: reviewer.token,
+    review_status: '待复核',
+    updated_at: now()
+  }).in('course_id', courseIds);
+
+  if(courseErr) {
+    hideLoading();
+    alert('分配失败：' + courseErr.message);
+    return;
+  }
+
+  // Update reviewer assigned_count
+  const newAssignedCount = reviewer.assigned_count + assigned;
+  const { error: revErr } = await sbClient.from('reviewers').update({
+    assigned_count: newAssignedCount
+  }).eq('reviewer_id', reviewer.reviewer_id);
+
+  if(revErr) {
+    hideLoading();
+    alert('督课官数据更新失败：' + revErr.message);
+    return;
+  }
+
+  await loadAllData();
+  hideLoading();
+  assignState.selectedCourseIds.clear();
+  assignState.selectedReviewerId = null;
+  alert('成功分配 ' + assigned + ' 门课程给 ' + reviewer.reviewer_name);
+  renderAdmin();
+};
+
+// ---- Reviewers Tab ----
+function renderReviewersTab(container) {
+  const reviewers = getReviewers();
+  const baseUrl = localStorage.getItem('dudao_public_url') || (location.origin + location.pathname);
+
+  container.innerHTML = `
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header"><h3>添加督课官</h3></div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end">
+          <div class="form-group" style="margin:0">
+            <label class="form-label">姓名</label>
+            <input class="form-input" id="newReviewerName" placeholder="请输入姓名">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">负责科目</label>
+            <select class="form-select" id="newReviewerSubject">
+              <option value="心理健康">心理健康</option>
+              <option value="趣味阅读">趣味阅读</option>
+              <option value="美术">美术</option>
+              <option value="趣味科学">趣味科学</option>
+              <option value="音乐">音乐</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label">最大任务数</label>
+            <input class="form-input" id="newReviewerMax" type="number" value="20" min="1">
+          </div>
+          <button class="btn btn-primary" onclick="addReviewer()">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h3>督课官列表</h3></div>
+      <div class="card-body" style="padding:0">
+        ${reviewers.map(r=>{
+          const link = baseUrl + '#reviewer/' + r.token + getConfigQuery();
+          return `
+          <div class="reviewer-item">
+            <div class="reviewer-info" style="flex:2">
+              <div class="name">${r.reviewer_name} <span class="tag ${r.status==='启用'?'tag-green':'tag-gray'}" style="font-size:11px">${r.status}</span></div>
+              <div class="detail">${r.subject} · 已分配 ${r.assigned_count} / 最大 ${r.max_tasks} · 已完成 ${r.completed_count}</div>
+            </div>
+            <div style="flex:3;display:flex;align-items:center;gap:8px;min-width:0">
+              <input class="form-input" value="${link}" readonly style="font-size:11px;font-family:var(--font-mono);min-width:0">
+              <button class="copy-btn" onclick="copyLink('${r.token}')">复制</button>
+            </div>
+            <button class="btn btn-sm ${r.status==='启用'?'btn-default':'btn-success'}" onclick="toggleReviewer('${r.reviewer_id}')" style="margin-left:8px">${r.status==='启用'?'停用':'启用'}</button>
+          </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+window.addReviewer = async function() {
+  const name = document.getElementById('newReviewerName').value.trim();
+  const subject = document.getElementById('newReviewerSubject').value;
+  const max = parseInt(document.getElementById('newReviewerMax').value) || 20;
+  if(!name) { alert('请输入姓名'); return; }
+
+  showLoading('正在添加督课官...');
+  const { error } = await sbClient.from('reviewers').insert({
+    reviewer_id: 'R' + Date.now(),
+    reviewer_name: name,
+    subject: subject,
+    token: uuid(),
+    max_tasks: max,
+    assigned_count: 0,
+    completed_count: 0,
+    status: '启用'
+  });
+
+  if(error) {
+    hideLoading();
+    alert('添加失败：' + error.message);
+    return;
+  }
+
+  await loadAllData();
+  hideLoading();
+  renderAdmin();
+};
+
+window.toggleReviewer = async function(id) {
+  const reviewers = getReviewers();
+  const r = reviewers.find(x=>x.reviewer_id===id);
+  if(!r) return;
+
+  const newStatus = r.status==='启用' ? '停用' : '启用';
+  showLoading('正在更新状态...');
+  const { error } = await sbClient.from('reviewers').update({ status: newStatus }).eq('reviewer_id', id);
+
+  if(error) {
+    hideLoading();
+    alert('更新失败：' + error.message);
+    return;
+  }
+
+  await loadAllData();
+  hideLoading();
+  renderAdmin();
+};
+
+function getConfigQuery() {
+  const u = localStorage.getItem('dudao_sb_url');
+  const k = localStorage.getItem('dudao_sb_key');
+  if(!u || !k) return '';
+  const cfg = JSON.stringify({u, k});
+  let b64 = btoa(unescape(encodeURIComponent(cfg)));
+  b64 = b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  return '?cfg=' + b64;
+}
+
+window.copyLink = function(token) {
+  const url = (localStorage.getItem('dudao_public_url') || (location.origin + location.pathname)) + '#reviewer/' + token + getConfigQuery();
+  navigator.clipboard.writeText(url).then(()=>{
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(()=>btn.textContent=orig, 1500);
+  }).catch(()=>{
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+};
+
+// ---- Export Tab ----
+function renderExportTab(container) {
+  container.innerHTML = `
+    <div class="export-options">
+      <div class="export-item">
+        <div class="export-info">
+          <h4>导出全部课程结果</h4>
+          <p>包含所有课程信息、AI分析结果、人工复核结果</p>
+        </div>
+        <button class="btn btn-primary" onclick="exportAll()">导出 Excel</button>
+      </div>
+      <div class="export-item">
+        <div class="export-info">
+          <h4>导出已完成反馈</h4>
+          <p>仅导出已复核完成的课程及反馈建议</p>
+        </div>
+        <button class="btn btn-primary" onclick="exportCompleted()">导出 Excel</button>
+      </div>
+      <div class="export-item">
+        <div class="export-info">
+          <h4>导出重点提升课反馈</h4>
+          <p>导出需要重点提升和跟进的课程</p>
+        </div>
+        <button class="btn btn-primary" onclick="exportImprove()">导出 Excel</button>
+      </div>
+      <div class="export-item">
+        <div class="export-info">
+          <h4>按督课官导出</h4>
+          <p>选择督课官，导出其所有已完成任务</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select class="form-select" id="exportReviewerSelect" style="width:120px">
+            ${getReviewers().map(r=>`<option value="${r.reviewer_name}">${r.reviewer_name}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" onclick="exportByReviewer()">导出 Excel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function coursesToSheet(courses) {
+  return courses.map(c => ({
+    '编号': c.course_id,
+    '课程名称': c.course_name,
+    '科目': c.subject,
+    '授课老师': c.teacher_name,
+    '志愿者编号': c.teacher_id,
+    '班级': c.class_name,
+    '学校': c.school_name,
+    '上课时间': c.lesson_time,
+    '时长(分钟)': c.duration,
+    'AI综合分': c.ai_score,
+    'AI报告链接': c.ai_report_url,
+    '回放链接': c.replay_url,
+    'AI分层': c.ai_layer,
+    '人工复核分类': c.final_layer,
+    '督课官': c.assigned_reviewer,
+    '状态': c.review_status,
+    '重点跟进': c.need_followup ? '是' : '否',
+    '反馈建议': c.teacher_feedback,
+    '内部备注': c.internal_notes
+  }));
+}
+
+function downloadExcel(data, filename) {
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '数据');
+  const cols = Object.keys(data[0]||{}).map(k => ({wch: Math.max(k.length*2, ...data.map(r=>(r[k]||'').toString().length))}));
+  ws['!cols'] = cols;
+  XLSX.writeFile(wb, filename);
+}
+
+window.exportAll = function() { downloadExcel(coursesToSheet(getCourses()), '全部课程数据.xlsx'); };
+window.exportCompleted = function() {
+  const data = getCourses().filter(c=>c.review_status==='已完成'||c.review_status==='需负责人复审');
+  if(!data.length) { alert('暂无已完成或需复审的课程'); return; }
+  downloadExcel(coursesToSheet(data), '已完成及需复审反馈.xlsx');
+};
+window.exportImprove = function() {
+  const data = getCourses().filter(c=>c.need_followup || c.ai_layer==='重点提升课候选');
+  if(!data.length) { alert('暂无重点提升课'); return; }
+  downloadExcel(coursesToSheet(data), '重点提升课反馈.xlsx');
+};
+window.exportByReviewer = function() {
+  const name = document.getElementById('exportReviewerSelect').value;
+  const data = getCourses().filter(c=>c.assigned_reviewer===name && (c.review_status==='已完成'||c.review_status==='需负责人复审'));
+  if(!data.length) { alert(name + ' 暂无已完成或需复审课程'); return; }
+  downloadExcel(coursesToSheet(data), name+'_任务结果.xlsx');
+};
+
+// =========== REVIEWER PAGE ===========
+let reviewerState = { view:'list', currentCourseId:null };
+
+async function renderReviewer(token) {
+  await refreshData();
+  const reviewers = getReviewers();
+  const reviewer = reviewers.find(r=>r.token===token);
+  if(!reviewer) {
+    app.innerHTML = `
+      <header class="app-header">
+        <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      </header>
+      <div class="main-content">
+        <div class="card" style="max-width:500px;margin:80px auto;text-align:center">
+          <div class="card-body" style="padding:48px 32px">
+            <div style="font-size:48px;margin-bottom:16px">🔒</div>
+            <h2 style="font-size:18px;margin-bottom:8px">访问无效</h2>
+            <p style="color:var(--color-text-secondary)">您使用的链接无效或已过期，请联系管理员获取专属访问链接。</p>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if(reviewer.status === '停用') {
+    app.innerHTML = `
+      <header class="app-header">
+        <h1><span class="logo-icon">督</span>AI辅助督课工作台 - 童年一课云教室</h1>
+      </header>
+      <div class="main-content">
+        <div class="card" style="max-width:500px;margin:80px auto;text-align:center">
+          <div class="card-body" style="padding:48px 32px">
+            <div style="font-size:48px;margin-bottom:16px">⛔</div>
+            <h2 style="font-size:18px;margin-bottom:8px">账号已停用</h2>
+            <p style="color:var(--color-text-secondary)">您的账号已被管理员停用，如有疑问请联系管理员。</p>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if(reviewerState.view === 'detail' && reviewerState.currentCourseId) {
+    renderReviewerDetail(reviewer);
+  } else {
+    renderReviewerList(reviewer);
+  }
+}
+
+function renderReviewerList(reviewer) {
+  const courses = getCourses().filter(c=>c.reviewer_token===reviewer.token);
+  const pending = courses.filter(c=>c.review_status==='待复核'||c.review_status==='复核中').length;
+  const completed = courses.filter(c=>c.review_status==='已完成'||c.review_status==='需负责人复审').length;
+  const followup = courses.filter(c=>c.need_followup).length;
+
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台</h1>
+      <div class="header-right">
+        ${dbStatusHtml()}
+        <span class="role-badge">${reviewer.reviewer_name}（${reviewer.subject}）</span>
+      </div>
+    </header>
+    <div class="reviewer-content">
+      <div class="reviewer-header" style="background:transparent;border:none;padding:0 0 16px">
+        <h1>欢迎，${reviewer.reviewer_name}</h1>
+        <p>以下是分配给您的督课任务</p>
+      </div>
+
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+        <div class="stat-card"><div class="stat-label">我的课程</div><div class="stat-value text-primary">${courses.length}</div></div>
+        <div class="stat-card"><div class="stat-label">待复核</div><div class="stat-value text-warning">${pending}</div></div>
+        <div class="stat-card"><div class="stat-label">已完成</div><div class="stat-value text-success">${completed}</div></div>
+        <div class="stat-card"><div class="stat-label">需重点跟进</div><div class="stat-value text-danger">${followup}</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>课程列表</h3></div>
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap" style="border:none;border-radius:0">
+            <table>
+              <thead>
+                <tr><th>课程名称</th><th>科目</th><th>授课老师</th><th>AI分数</th><th>AI初筛分层</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                ${courses.length ? courses.map(c=>`
+                  <tr>
+                    <td style="font-weight:500">${c.course_name}</td>
+                    <td>${c.subject}</td>
+                    <td>${c.teacher_name}</td>
+                    <td style="font-family:var(--font-mono);font-weight:600">${c.ai_score!=null?c.ai_score:'-'}</td>
+                    <td><span class="tag ${getLayerTagClass(c.ai_layer)}">${c.ai_layer}</span></td>
+                    <td><span class="tag ${getStatusTagClass(c.review_status)}">${c.review_status}</span></td>
+                    <td><button class="btn-link" onclick="reviewerViewDetail('${c.course_id}')">${c.review_status==='已完成'||c.review_status==='需负责人复审'?'查看':'复核'}</button></td>
+                  </tr>
+                `).join('') : '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--color-text-muted)">暂无课程</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="modalContainer"></div>
+  `;
+}
+
+window.reviewerViewDetail = function(courseId) {
+  reviewerState.view = 'detail';
+  reviewerState.currentCourseId = courseId;
+  render();
+};
+
+function renderReviewerDetail(reviewer) {
+  const courses = getCourses();
+  const c = courses.find(x=>x.course_id===reviewerState.currentCourseId);
+  if(!c) { reviewerState.view='list'; render(); return; }
+  const isCompleted = c.review_status==='已完成'||c.review_status==='需负责人复审';
+
+  app.innerHTML = `
+    <header class="app-header">
+      <h1><span class="logo-icon">督</span>AI辅助督课工作台</h1>
+      <div class="header-right">
+        ${dbStatusHtml()}
+        <span class="role-badge">${reviewer.reviewer_name}（${reviewer.subject}）</span>
+      </div>
+    </header>
+    <div class="reviewer-content">
+      <div class="course-detail">
+        <button class="btn btn-default back-btn" onclick="reviewerBack()">← 返回课程列表</button>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><h3>课程信息</h3></div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="info-item"><div class="info-label">课程名称</div><div class="info-value">${c.course_name}</div></div>
+              <div class="info-item"><div class="info-label">科目</div><div class="info-value">${c.subject}</div></div>
+              <div class="info-item"><div class="info-label">授课老师</div><div class="info-value">${c.teacher_name}</div></div>
+              <div class="info-item"><div class="info-label">班级</div><div class="info-value">${c.class_name||'-'}</div></div>
+              <div class="info-item"><div class="info-label">学校</div><div class="info-value">${c.school_name||'-'}</div></div>
+              <div class="info-item"><div class="info-label">上课时间</div><div class="info-value">${formatDate(c.lesson_time)}</div></div>
+              <div class="info-item"><div class="info-label">时长</div><div class="info-value">${c.duration?c.duration+'分钟':'-'}</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><h3>AI 分析</h3></div>
+          <div class="card-body" style="text-align:center">
+            <div class="score-display ${getScoreClass(c.ai_score)}">${c.ai_score!=null?c.ai_score:'--'}</div>
+            <div style="margin-top:4px;font-size:13px;color:var(--color-text-secondary)">AI综合评分</div>
+            <div style="margin-top:8px"><span class="tag ${getLayerTagClass(c.ai_layer)}">${c.ai_layer}</span></div>
+            <div style="display:flex;gap:8px;justify-content:center;margin-top:16px">
+              ${c.ai_report_url ? `<a href="${c.ai_report_url}" target="_blank" rel="noopener noreferrer" class="link-box">📄 查看AI报告</a>` : ''}
+              ${c.replay_url ? `<a href="${c.replay_url}" target="_blank" rel="noopener noreferrer" class="link-box">▶️ 查看回放</a>` : ''}
+            </div>
+          </div>
+        </div>
+
+        <div class="alert-box alert-warning">
+          <p><strong>⚠️ 重要提示</strong></p>
+          <ul style="margin-top:8px;padding-left:20px">
+            <li>AI结果仅作为课程初筛参考，不能替代人工判断</li>
+            <li>请结合课程回放，对教师语言、教姿教态、学生参与度、教师引导、线上工具使用、红线风险等进行人工复核</li>
+            <li>涉及红线、清退、暂停授课等情况时，不得自行下最终结论，必须提交教学部负责人复审</li>
+          </ul>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-header"><h3>${isCompleted?'复核结果':'人工复核'}</h3></div>
+          <div class="card-body">
+            ${isCompleted ? `
+              <div style="margin-bottom:16px">
+                <div class="info-label">人工复核分类</div>
+                <div style="margin-top:4px"><span class="tag ${getLayerTagClass(c.final_layer)}">${c.final_layer||'-'}</span></div>
+              </div>
+              <div style="margin-bottom:16px">
+                <div class="info-label">重点跟进</div>
+                <div style="margin-top:4px">${c.need_followup?'是':'否'}</div>
+              </div>
+              ${c.teacher_feedback?`<div style="margin-bottom:16px"><div class="info-label">反馈建议</div><div style="margin-top:4px;padding:12px;background:var(--color-bg);border-radius:var(--radius-sm);font-size:13px;white-space:pre-wrap">${c.teacher_feedback}</div></div>`:''}
+              ${c.internal_notes?`<div><div class="info-label">内部备注</div><div style="margin-top:4px;padding:12px;background:var(--color-bg);border-radius:var(--radius-sm);font-size:13px;white-space:pre-wrap">${c.internal_notes}</div></div>`:''}
+            ` : `
+              <div class="form-group">
+                <label class="form-label">人工复核分类</label>
+                <select class="form-select" id="reviewFinalLayer">
+                  <option value="">请选择</option>
+                  <option value="优秀课候选">优秀课候选</option>
+                  <option value="常规课">常规课</option>
+                  <option value="重点提升课">重点提升课</option>
+                  <option value="异常课">异常课</option>
+                  <option value="暂停授课建议">暂停授课建议</option>
+                  <option value="清退复审建议">清退复审建议</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">是否需要重点跟进</label>
+                <label class="switch">
+                  <input type="checkbox" id="reviewFollowup">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="form-group">
+                <label class="form-label">是否发现异常</label>
+                <label class="switch">
+                  <input type="checkbox" id="reviewRisk" onchange="document.getElementById('riskTypeGroup').style.display=this.checked?'block':'none'">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="form-group" id="riskTypeGroup" style="display:none">
+                <label class="form-label">异常类型</label>
+                <input class="form-input" id="reviewRiskType" placeholder="请描述异常类型">
+              </div>
+              <div class="form-group">
+                <label class="form-label">给老师的反馈建议</label>
+                <textarea class="form-textarea" id="reviewFeedback" placeholder="老师您好，这节课整体……本节课比较值得肯定的是……后续可以重点优化两个方面。第一，建议……第二，建议……整体来看……"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">内部备注</label>
+                <textarea class="form-textarea" id="reviewNotes" placeholder="内部复核备注信息"></textarea>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:16px">
+                <button class="btn btn-primary" onclick="submitReview('${c.course_id}','${reviewer.token}')">提交复核</button>
+                <button class="btn btn-default" onclick="reviewerBack()">取消</button>
+              </div>
+            `}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="modalContainer"></div>
+  `;
+}
+
+window.reviewerBack = async function() {
+  reviewerState.view = 'list';
+  reviewerState.currentCourseId = null;
+  await render();
+};
+
+window.submitReview = async function(courseId, token) {
+  const finalLayer = document.getElementById('reviewFinalLayer').value;
+  if(!finalLayer) { alert('请选择人工复核分类'); return; }
+
+  const followup = document.getElementById('reviewFollowup').checked;
+  const hasRisk = document.getElementById('reviewRisk').checked;
+  const riskType = hasRisk ? document.getElementById('reviewRiskType').value.trim() : '';
+  const feedback = document.getElementById('reviewFeedback').value.trim();
+  const notes = document.getElementById('reviewNotes').value.trim();
+
+  let status = '已完成';
+  if(finalLayer === '暂停授课建议' || finalLayer === '清退复审建议') {
+    status = '需负责人复审';
+  }
+
+  // Find reviewer by token
+  const reviewers = getReviewers();
+  const reviewer = reviewers.find(r=>r.token===token);
+  if(!reviewer) { alert('督课官身份验证失败，请重新登录'); return; }
+
+  // Validate course belongs to this reviewer (双校验 course_id + reviewer_token)
+  const courses = getCourses();
+  const course = courses.find(c=>c.course_id===courseId && c.reviewer_token===token);
+  if(!course) { alert('课程权限校验失败：该课程不属于当前督课官'); return; }
+
+  const reviewerName = reviewer.reviewer_name;
+  showLoading('正在提交复核结果...');
+
+  // Update course (同时校验 course_id 和 reviewer_token)
+  const { error: courseErr } = await sbClient.from('courses').update({
+    final_layer: finalLayer,
+    need_followup: followup,
+    review_status: status,
+    teacher_feedback: feedback,
+    internal_notes: notes,
+    updated_at: now()
+  }).eq('course_id', courseId).eq('reviewer_token', token);
+
+  if(courseErr) {
+    hideLoading();
+    alert('提交失败：' + courseErr.message);
+    return;
+  }
+
+  // Insert log
+  const { error: logErr } = await sbClient.from('review_logs').insert({
+    log_id: 'L' + Date.now(),
+    course_id: courseId,
+    reviewer_name: reviewerName,
+    final_layer: finalLayer,
+    need_followup: followup,
+    has_risk: hasRisk,
+    risk_type: riskType,
+    teacher_feedback: feedback,
+    internal_notes: notes,
+    submitted_at: now()
+  });
+
+  if(logErr) {
+    hideLoading();
+    alert('日志记录失败：' + logErr.message);
+    return;
+  }
+
+  // Update reviewer completed_count
+  const { data: myCourses } = await sbClient.from('courses').select('*').eq('reviewer_token', reviewer.token);
+  const completedCount = (myCourses || []).filter(c => c.review_status === '已完成' || c.review_status === '需负责人复审').length;
+  await sbClient.from('reviewers').update({ completed_count: completedCount }).eq('reviewer_name', reviewerName);
+
+  await loadAllData();
+  hideLoading();
+  alert('复核提交成功！');
+  reviewerBack();
+};
+
+// 从 URL hash 中提取并应用 Supabase 配置（用于督课官分享链接）
+function applyConfigFromUrl() {
+  const hash = location.hash || '';
+  // 格式: #reviewer/{token}?cfg={base64url}
+  const cfgMatch = hash.match(/[?&]cfg=([^&]+)/);
+  if(cfgMatch) {
+    try {
+      let b64 = cfgMatch[1].replace(/-/g,'+').replace(/_/g,'/');
+      while(b64.length % 4) b64 += '=';
+      const cfgJson = decodeURIComponent(escape(atob(b64)));
+      const cfg = JSON.parse(cfgJson);
+      if(cfg.u && cfg.k) {
+        localStorage.setItem('dudao_sb_url', cfg.u);
+        localStorage.setItem('dudao_sb_key', cfg.k);
+        const cleanHash = hash.replace(/[?&]cfg=[^&]+/, '');
+        history.replaceState(null, '', cleanHash || '#reviewer/');
+        return true;
+      }
+    } catch(e) {
+      console.warn('解析URL配置失败:', e);
+    }
+  }
+  return false;
+}
+
+// =========== INIT ===========
+async function init() {
+  const route = getRoute();
+  if(route.page === 'reviewer' && !initSupabase()) {
+    applyConfigFromUrl();
+  }
+  if(!initSupabase()) {
+    renderConfigPage();
+    return;
+  }
+  // Test connection
+  const { error } = await sbClient.from('courses').select('course_id').limit(1);
+  if(error) {
+    renderConfigPage('连接失败，请检查配置和表是否已创建：' + error.message);
+    return;
+  }
+  dbReady = true;
+  showLoading('正在加载数据...');
+  await loadAllData();
+  hideLoading();
+  render();
+}
+
+window.addEventListener('hashchange', async () => { reviewerState = {view:'list',currentCourseId:null}; await render(); });
+init();
+</script>
+</body>
+</html>

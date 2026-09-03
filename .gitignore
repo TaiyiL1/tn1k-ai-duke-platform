@@ -1,0 +1,6 @@
+*.backup.html
+deploy/
+tools/
+*.log
+build.py
+.DS_Store

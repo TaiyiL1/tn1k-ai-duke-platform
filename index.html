@@ -684,6 +684,7 @@ function getDepthClass(depth) {
 
 // =========== AI API CONFIG ===========
 const AI_CONFIG_KEY = 'dudao_ai_config';
+const DEFAULT_PROXY_URL = 'https://api.allorigins.win/raw?url=';
 function getAiConfig() {
   try {
     return JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}');
@@ -691,6 +692,10 @@ function getAiConfig() {
 }
 function saveAiConfig(cfg) {
   localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(cfg));
+}
+function getProxyUrl() {
+  const cfg = getAiConfig();
+  return cfg.proxyUrl || DEFAULT_PROXY_URL;
 }
 
 // =========== LOADING STATES ===========
@@ -750,6 +755,8 @@ CREATE TABLE IF NOT EXISTS courses (
   report_structured_json TEXT DEFAULT '',
   ai_deep_analysis TEXT DEFAULT '',
   ai_action_suggestions TEXT DEFAULT '',
+  ai_analysis_status TEXT DEFAULT 'pending',
+  ai_analysis_error TEXT DEFAULT '',
   analysis_depth TEXT DEFAULT 'basic_report_only',
   risk_level TEXT DEFAULT '',
   needs_video_review BOOLEAN DEFAULT false,
@@ -900,9 +907,31 @@ EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'submit_review error: %', SQLERRM; RETUR
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
+-- ============= 批次计数原子更新函数 =============
+CREATE OR REPLACE FUNCTION increment_batch_count(p_batch_id TEXT, p_field TEXT, p_delta INTEGER)
+RETURNS BOOLEAN AS $$
+DECLARE v_sql TEXT;
+BEGIN
+  IF p_batch_id IS NULL OR p_batch_id = '' THEN RETURN FALSE; END IF;
+  IF p_field NOT IN (
+    'fetch_success_count', 'fetch_failed_count',
+    'ai_analysis_pending', 'ai_analysis_done', 'ai_analysis_failed',
+    'total_rows', 'valid_course_rows'
+  ) THEN RETURN FALSE; END IF;
+
+  v_sql := 'UPDATE import_batches SET ' || quote_ident(p_field) || ' = ' || quote_ident(p_field) || ' + $1 WHERE id = $2';
+  EXECUTE v_sql USING p_delta, p_batch_id;
+  RETURN TRUE;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'increment_batch_count error: %', SQLERRM;
+  RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
 GRANT EXECUTE ON FUNCTION get_reviewer_info(TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION get_reviewer_courses(TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION submit_review(TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, TEXT) TO anon, authenticated;`;
+GRANT EXECUTE ON FUNCTION submit_review(TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION increment_batch_count(TEXT, TEXT, INTEGER) TO authenticated;`;
 
 // =========== CONFIG PAGE ===========
 function renderConfigPage(errorMsg) {
@@ -1232,6 +1261,7 @@ async function renderAdmin() {
         <button class="tab-btn ${adminState.activeTab==='focusCourses'?'active':''}" data-tab="focusCourses">🎯 重点课程</button>
         <button class="tab-btn ${adminState.activeTab==='courseDetail'?'active':''}" data-tab="courseDetail">📋 课程详情</button>
         <button class="tab-btn ${adminState.activeTab==='reviewers'?'active':''}" data-tab="reviewers">👥 督课官管理</button>
+        <button class="tab-btn ${adminState.activeTab==='batches'?'active':''}" data-tab="batches">📦 批次管理</button>
         <button class="tab-btn ${adminState.activeTab==='export'?'active':''}" data-tab="export">📤 导出中心</button>
       </div>
 
@@ -1275,6 +1305,7 @@ function renderTabContent() {
     case 'focusCourses': renderFocusCoursesTab(container); break;
     case 'courseDetail': renderCourseDetailTab(container); break;
     case 'reviewers': renderReviewersTab(container); break;
+    case 'batches': renderBatchesTab(container); break;
     case 'export': renderExportTab(container); break;
   }
 }
@@ -1500,6 +1531,11 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
 
       ${subjectPreview ? `<div style="margin-bottom:8px;font-size:13px;font-weight:500">科目识别预览（前20条）：</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${subjectPreview}</div>` : ''}
 
+      <div class="alert-box alert-info" style="margin-bottom:12px">
+        💡 <strong>报告抓取说明</strong>：导入后将自动尝试抓取 ClassIn 报告内容，但自动抓取依赖 CORS 代理服务器（在「AI设置」中配置）。
+        如代理不可用，请使用报告队列中的「手动粘贴」功能兜底。
+      </div>
+
       <div class="preview-table-wrap">
         <table>
           <thead><tr>${headers.map((h,i)=>`<th>${escapeHtml(h)}${mapping[i]?' ✓':''}</th>`).join('')}</tr></thead>
@@ -1598,6 +1634,8 @@ window.confirmClassInImport = async function() {
       report_structured_json: '',
       ai_deep_analysis: '',
       ai_action_suggestions: '',
+      ai_analysis_status: cls.depth === 'report_deep_ai' ? 'pending' : 'none',
+      ai_analysis_error: '',
       analysis_depth: cls.depth || 'basic_report_only',
       risk_level: cls.risk || '',
       needs_video_review: false,
@@ -1686,6 +1724,11 @@ function renderReportFetchTab(container) {
       <div class="stat-card"><div class="stat-label">总计</div><div class="stat-value text-primary">${total}</div></div>
     </div>
 
+    <div class="alert-box alert-info" style="margin-bottom:12px">
+      💡 <strong>关于自动抓取</strong>：自动抓取依赖 CORS 代理服务器（在「AI设置」中配置代理URL）。
+      公共代理不稳定，如不可用请使用「手动粘贴」功能兜底。请勿宣称"已实现自动读取"。
+    </div>
+
     <div class="card">
       <div class="card-header">
         <h3>📄 报告读取队列</h3>
@@ -1747,7 +1790,30 @@ window.goReportPage = function(p) { adminState.reportFetchPage = p; renderAdmin(
 
 // --- 报告抓取 ---
 async function fetchReportContent(url) {
-  // 前端尝试 fetch
+  const proxyUrl = getProxyUrl();
+  let lastError = '';
+
+  // 方式一：通过代理请求（优先）
+  if(proxyUrl) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const proxiedUrl = proxyUrl + encodeURIComponent(url);
+      const resp = await fetch(proxiedUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if(!resp.ok) throw new Error('代理返回 HTTP ' + resp.status);
+      const text = await resp.text();
+      if(text && text.length > 100) {
+        return { success: true, text: text, via: 'proxy' };
+      }
+      lastError = '代理返回内容过短';
+    } catch(e) {
+      lastError = '代理失败：' + e.message;
+      console.warn('[fetchReport] proxy failed:', e.message);
+    }
+  }
+
+  // 方式二：直连 fetch（回退）
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -1755,23 +1821,109 @@ async function fetchReportContent(url) {
     clearTimeout(timeoutId);
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const text = await resp.text();
-    return { success: true, text: text };
+    return { success: true, text: text, via: 'direct' };
   } catch(e) {
-    return { success: false, error: e.message };
+    const directError = e.message;
+    let finalError = lastError ? (lastError + '；直连也失败：' + directError) : directError;
+    // 判断是否 CORS 相关
+    if(directError.includes('Failed to fetch') || directError.includes('CORS') || directError.includes('NetworkError')) {
+      finalError += '（可能因CORS限制，建议使用代理服务器或手动粘贴）';
+    }
+    return { success: false, error: finalError };
   }
 }
 
 // 提取报告主要文本（去除HTML标签，保留正文）
 function extractReportText(html) {
   if(!html) return '';
-  // 简单去HTML标签
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
-  // 移除 script/style
   tmp.querySelectorAll('script, style, noscript, iframe').forEach(el => el.remove());
   const text = tmp.innerText || tmp.textContent || '';
-  // 压缩空白
   return text.replace(/\s+/g, ' ').trim();
+}
+
+// 从报告 HTML/文本 中解析结构化信息
+function parseReportStructured(html, rawText) {
+  const result = {
+    score: null,
+    issue_summary: null,
+    interaction_summary: null,
+    teacher_behavior: null,
+    student_participation: null,
+    raw_sections: []
+  };
+
+  let text = rawText || extractReportText(html);
+  if(!text) return JSON.stringify(result);
+
+  // 提取分数（匹配 "得分"、"分数"、"AI 得分" 等 + 数字）
+  const scorePatterns = [
+    /(?:AI授课分析得分|AI得分|综合得分|总评分|得分|分数)[^0-9]{0,10}(\d{1,3}(?:\.\d{1,2})?)/i,
+    /(\d{2,3}(?:\.\d{1,2})?)\s*分/
+  ];
+  for(const p of scorePatterns) {
+    const m = text.match(p);
+    if(m) {
+      const s = parseFloat(m[1]);
+      if(s >= 0 && s <= 100) { result.score = s; break; }
+    }
+  }
+
+  // 提取章节/模块标题
+  const sectionKeywords = ['课堂概况','课堂互动','教师表现','学生参与','教学内容','教学过程','问题反馈','综合评价','需关注问题','亮点','建议'];
+  for(const kw of sectionKeywords) {
+    if(text.includes(kw)) result.raw_sections.push(kw);
+  }
+  // 去重
+  result.raw_sections = [...new Set(result.raw_sections)];
+
+  // 提取"需关注问题"摘要
+  const issueMatch = text.match(/需关注问题[^。！？]{0,200}([^。！？]{20,200})/);
+  if(issueMatch) {
+    result.issue_summary = issueMatch[1].trim().substring(0, 200);
+  } else {
+    // 兜底：找包含"问题"的短句
+    const issueSentences = text.split(/[。！？\n]/).filter(s => /问题|不足|需关注|风险/.test(s) && s.length > 8 && s.length < 150);
+    if(issueSentences.length) {
+      result.issue_summary = issueSentences.slice(0, 3).join('；').substring(0, 200);
+    }
+  }
+
+  // 提取互动摘要
+  const interactMatch = text.match(/(?:课堂互动|互动情况|互动参与)[^。！？]{0,50}([^。！？]{20,200})/);
+  if(interactMatch) {
+    result.interaction_summary = interactMatch[1].trim().substring(0, 200);
+  } else {
+    const interactSentences = text.split(/[。！？\n]/).filter(s => /互动|提问|回答|举手|参与/.test(s) && s.length > 10 && s.length < 150);
+    if(interactSentences.length) {
+      result.interaction_summary = interactSentences.slice(0, 3).join('；').substring(0, 200);
+    }
+  }
+
+  // 教师表现
+  const teacherMatch = text.match(/(?:教师表现|教师行为|授课表现|教学状态)[^。！？]{0,50}([^。！？]{20,200})/);
+  if(teacherMatch) {
+    result.teacher_behavior = teacherMatch[1].trim().substring(0, 200);
+  } else {
+    const teacherSentences = text.split(/[。！？\n]/).filter(s => /教师|老师|授课|教学/.test(s) && s.length > 10 && s.length < 150);
+    if(teacherSentences.length) {
+      result.teacher_behavior = teacherSentences.slice(0, 3).join('；').substring(0, 200);
+    }
+  }
+
+  // 学生参与
+  const studentMatch = text.match(/(?:学生参与|学生表现|学生状态|课堂参与)[^。！？]{0,50}([^。！？]{20,200})/);
+  if(studentMatch) {
+    result.student_participation = studentMatch[1].trim().substring(0, 200);
+  } else {
+    const studentSentences = text.split(/[。！？\n]/).filter(s => /学生|参与|专注|注意力/.test(s) && s.length > 10 && s.length < 150);
+    if(studentSentences.length) {
+      result.student_participation = studentSentences.slice(0, 3).join('；').substring(0, 200);
+    }
+  }
+
+  return JSON.stringify(result);
 }
 
 window.fetchSingleReport = async function(courseId) {
@@ -1790,10 +1942,12 @@ window.fetchSingleReport = async function(courseId) {
 
   if(result.success) {
     const reportText = extractReportText(result.text);
+    const structuredJson = parseReportStructured(result.text, reportText);
     await sbClient.from('courses').update({
       report_fetch_status: 'success',
       report_fetch_error: '',
-      report_raw_text: reportText.substring(0, 10000) // 限制长度
+      report_raw_text: reportText.substring(0, 10000),
+      report_structured_json: structuredJson
     }).eq('course_id', courseId);
   } else {
     await sbClient.from('courses').update({
@@ -1818,21 +1972,40 @@ window.fetchAllPendingReports = async function() {
     const result = await fetchReportContent(c.classin_report_url);
     if(result.success) {
       const text = extractReportText(result.text);
+      const structuredJson = parseReportStructured(result.text, text);
       await sbClient.from('courses').update({
         report_fetch_status: 'success',
         report_fetch_error: '',
-        report_raw_text: text.substring(0, 10000)
+        report_raw_text: text.substring(0, 10000),
+        report_structured_json: structuredJson
       }).eq('course_id', c.course_id);
+      // 批次统计回写（原子递增）
+      if(c.import_batch_id) {
+        await sbClient.rpc('increment_batch_count', {
+          batch_id: c.import_batch_id,
+          field: 'fetch_success_count',
+          delta: 1
+        }).catch(()=>{});
+      }
       success++;
     } else {
       await sbClient.from('courses').update({
         report_fetch_status: 'failed',
         report_fetch_error: result.error + '（CORS限制，需手动粘贴）'
       }).eq('course_id', c.course_id);
+      if(c.import_batch_id) {
+        await sbClient.rpc('increment_batch_count', {
+          batch_id: c.import_batch_id,
+          field: 'fetch_failed_count',
+          delta: 1
+        }).catch(()=>{});
+      }
       failed++;
     }
   }
 
+  // 最终统计同步
+  await syncBatchStatsFromCourses();
   await refreshData();
   renderAdmin();
   alert(`批量读取完成：成功 ${success} 个，失败 ${failed} 个`);
@@ -1845,9 +2018,66 @@ window.retryAllFailedReports = async function() {
   // 重置为 pending，然后重新批量读取
   for(const c of failed) {
     await sbClient.from('courses').update({ report_fetch_status: 'pending' }).eq('course_id', c.course_id);
+    // 批次计数回退（重置时失败计数减一）
+    if(c.import_batch_id) {
+      await sbClient.rpc('increment_batch_count', {
+        batch_id: c.import_batch_id,
+        field: 'fetch_failed_count',
+        delta: -1
+      }).catch(()=>{});
+    }
   }
   await refreshData();
   window.fetchAllPendingReports();
+};
+
+// --- 批次统计同步工具 ---
+async function syncBatchStatsFromCourses() {
+  try {
+    const batches = getBatches();
+    const courses = getCourses();
+    for(const b of batches) {
+      const batchCourses = courses.filter(c => c.import_batch_id === b.id);
+      const fetchSuccess = batchCourses.filter(c => c.report_fetch_status === 'success').length;
+      const fetchFailed = batchCourses.filter(c => c.report_fetch_status === 'failed').length;
+      const aiDone = batchCourses.filter(c => c.ai_analysis_status === 'success').length;
+      const aiFailed = batchCourses.filter(c => c.ai_analysis_status === 'failed').length;
+      const aiPending = batchCourses.filter(c => c.ai_analysis_status === 'pending' || c.ai_analysis_status === 'analyzing').length;
+      await sbClient.from('import_batches').update({
+        fetch_success_count: fetchSuccess,
+        fetch_failed_count: fetchFailed,
+        ai_analysis_pending: aiPending,
+        ai_analysis_done: aiDone,
+        ai_analysis_failed: aiFailed
+      }).eq('id', b.id).catch(()=>{});
+    }
+  } catch(e) {
+    console.warn('syncBatchStatsFromCourses error:', e);
+  }
+}
+
+// 刷新单个批次统计
+window.refreshBatchStats = async function(batchId) {
+  try {
+    const courses = getCourses().filter(c => c.import_batch_id === batchId);
+    const fetchSuccess = courses.filter(c => c.report_fetch_status === 'success').length;
+    const fetchFailed = courses.filter(c => c.report_fetch_status === 'failed').length;
+    const aiDone = courses.filter(c => c.ai_analysis_status === 'success').length;
+    const aiFailed = courses.filter(c => c.ai_analysis_status === 'failed').length;
+    const aiPending = courses.filter(c => c.ai_analysis_status === 'pending' || c.ai_analysis_status === 'analyzing').length;
+    await sbClient.from('import_batches').update({
+      fetch_success_count: fetchSuccess,
+      fetch_failed_count: fetchFailed,
+      ai_analysis_pending: aiPending,
+      ai_analysis_done: aiDone,
+      ai_analysis_failed: aiFailed
+    }).eq('id', batchId);
+    await refreshData();
+    renderAdmin();
+    alert('✅ 批次统计已刷新');
+  } catch(e) {
+    alert('刷新失败：' + e.message);
+  }
 };
 
 // --- 手动粘贴报告 ---
@@ -1882,11 +2112,22 @@ window.openPasteReportModal = function(courseId) {
 window.submitPastedReport = async function(courseId) {
   const text = document.getElementById('pasteReportText').value.trim();
   if(!text) { alert('请粘贴报告内容'); return; }
+  const structuredJson = parseReportStructured(null, text);
+  const course = getCourses().find(c => c.course_id === courseId);
   await sbClient.from('courses').update({
     report_fetch_status: 'success',
     report_fetch_error: '',
-    report_raw_text: text.substring(0, 10000)
+    report_raw_text: text.substring(0, 10000),
+    report_structured_json: structuredJson
   }).eq('course_id', courseId);
+  // 批次统计回写
+  if(course && course.import_batch_id) {
+    await sbClient.rpc('increment_batch_count', {
+      batch_id: course.import_batch_id,
+      field: 'fetch_success_count',
+      delta: 1
+    }).catch(()=>{});
+  }
   await refreshData();
   closeModal();
   renderAdmin();
@@ -1925,10 +2166,18 @@ function renderAiAnalysisTab(container) {
 
     <div class="card">
       <div class="card-header">
-        <h3>🧠 AI 深度分析队列</h3>
+        <div style="display:flex;gap:0;border-bottom:none;margin-bottom:0">
+          <button class="tab-btn ${adminState.aiSubTab==='pending'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setAiSubTab('pending')">待分析 (${needAnalysis.length})</button>
+          <button class="tab-btn ${adminState.aiSubTab==='analyzing'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setAiSubTab('analyzing')">分析中 (${courses.filter(c=>c.ai_analysis_status==='analyzing').length})</button>
+          <button class="tab-btn ${adminState.aiSubTab==='done'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setAiSubTab('done')">已完成 (${analyzed.length})</button>
+          <button class="tab-btn ${adminState.aiSubTab==='failed'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setAiSubTab('failed')">失败 (${courses.filter(c=>c.ai_analysis_status==='failed').length})</button>
+        </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sm btn-primary" onclick="batchAnalyzeReady()" ${!hasConfig || reportReady.length===0?'disabled':''}>
             🚀 批量分析已就绪 (${reportReady.length})
+          </button>
+          <button class="btn btn-sm btn-warning" onclick="retryAllFailedAiAnalysis()" ${courses.filter(c=>c.ai_analysis_status==='failed').length===0?'disabled':''}>
+            🔄 重试全部失败
           </button>
           <button class="btn btn-sm btn-default" onclick="refreshDataAndRender()">🔄 刷新</button>
         </div>
@@ -1955,7 +2204,7 @@ function renderAiAnalysisTab(container) {
               </tr>
             </thead>
             <tbody id="aiAnalysisTable">
-              ${renderAiAnalysisRows(needAnalysis.slice(0, 50))}
+              ${renderAiAnalysisRows(getAiAnalysisList().slice(0, 50))}
             </tbody>
           </table>
         </div>
@@ -1969,7 +2218,22 @@ function renderAiAnalysisTab(container) {
 
 function renderAiAnalysisRows(courses) {
   if(!courses.length) return '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--color-text-muted)">暂无需分析的课程</td></tr>';
-  return courses.map(c => `
+  return courses.map(c => {
+    let actionBtn = '';
+    if(c.ai_analysis_status === 'failed') {
+      actionBtn = `<button class="btn btn-sm btn-warning" onclick="retrySingleAiAnalysis('${c.course_id}')" ${c.report_fetch_status!=='success'?'disabled':''}>重试</button>
+        <div style="font-size:11px;color:var(--color-danger);margin-top:4px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.ai_analysis_error||'')}">${escapeHtml(c.ai_analysis_error||'')}</div>`;
+    } else if(c.ai_analysis_status === 'analyzing') {
+      actionBtn = '<span style="font-size:12px;color:var(--color-warning)">⏳ 分析中...</span>';
+    } else if(c.ai_analysis_status === 'success') {
+      actionBtn = `<button class="btn btn-sm btn-default" onclick="viewCourseDetailAdmin('${c.course_id}')">查看结果</button>`;
+    } else {
+      actionBtn = `<button class="btn btn-sm btn-default" onclick="analyzeSingleCourse('${c.course_id}')" ${c.report_fetch_status!=='success'?'disabled':''}>
+          分析
+        </button>
+        ${c.report_fetch_status !== 'success' ? `<span style="font-size:11px;color:var(--color-text-muted)">需先读取报告</span>` : ''}`;
+    }
+    return `
     <tr>
       <td><span class="depth-badge ${getDepthClass(c.analysis_depth)}">${getDepthLabel(c.analysis_depth)}</span></td>
       <td style="font-weight:500">${escapeHtml(c.course_name||'-')}</td>
@@ -1977,14 +2241,9 @@ function renderAiAnalysisRows(courses) {
       <td style="font-family:var(--font-mono)">${c.ai_score != null ? c.ai_score : '-'}</td>
       <td>${getFetchStatusDot(c.report_fetch_status)}${getFetchStatusLabel(c.report_fetch_status)}</td>
       <td class="${getRiskClass(c.risk_level)}">${getRiskLabel(c.risk_level)}</td>
-      <td>
-        <button class="btn btn-sm btn-default" onclick="analyzeSingleCourse('${c.course_id}')" ${c.report_fetch_status!=='success'?'disabled':''}>
-          分析
-        </button>
-        ${c.report_fetch_status !== 'success' ? `<span style="font-size:11px;color:var(--color-text-muted)">需先读取报告</span>` : ''}
-      </td>
+      <td>${actionBtn}</td>
     </tr>
-  `).join('');
+  `;}).join('');
 }
 
 function refreshDataAndRender() {
@@ -2115,11 +2374,34 @@ window.analyzeSingleCourse = async function(courseId) {
     return;
   }
 
+  // 标记为分析中
+  await sbClient.from('courses').update({
+    ai_analysis_status: 'analyzing',
+    ai_analysis_error: ''
+  }).eq('course_id', courseId);
+  await refreshData();
+  renderAdmin();
+
   showLoading('正在进行 AI 深度分析...');
   const result = await callAiAnalysis(course);
   hideLoading();
 
   if(!result.success) {
+    await sbClient.from('courses').update({
+      ai_analysis_status: 'failed',
+      ai_analysis_error: result.error || '未知错误',
+      updated_at: now()
+    }).eq('course_id', courseId);
+    // 批次回写
+    if(course.import_batch_id) {
+      await sbClient.rpc('increment_batch_count', {
+        batch_id: course.import_batch_id,
+        field: 'ai_analysis_failed',
+        delta: 1
+      }).catch(()=>{});
+    }
+    await refreshData();
+    renderAdmin();
     alert('AI 分析失败：' + result.error);
     return;
   }
@@ -2129,6 +2411,8 @@ window.analyzeSingleCourse = async function(courseId) {
     ai_deep_analysis: (aiData.ai_second_opinion || '').substring(0, 500),
     ai_action_suggestions: JSON.stringify(aiData),
     analysis_depth: 'report_deep_ai',
+    ai_analysis_status: 'success',
+    ai_analysis_error: '',
     risk_level: aiData.risk_level || course.risk_level || '',
     needs_video_review: !!aiData.suggest_video_review,
     needs_audio_transcript: !!aiData.suggest_audio_transcript,
@@ -2145,9 +2429,85 @@ window.analyzeSingleCourse = async function(courseId) {
   }
 
   await sbClient.from('courses').update(updates).eq('course_id', courseId);
+  // 批次回写
+  if(course.import_batch_id) {
+    await sbClient.rpc('increment_batch_count', {
+      batch_id: course.import_batch_id,
+      field: 'ai_analysis_done',
+      delta: 1
+    }).catch(()=>{});
+  }
+  await syncBatchStatsFromCourses();
   await refreshData();
   renderAdmin();
   alert('✅ AI 分析完成');
+};
+
+function getAiAnalysisList() {
+  const courses = getCourses();
+  const sub = adminState.aiSubTab || 'pending';
+  if(sub === 'pending') {
+    return courses.filter(c => c.analysis_depth === 'report_deep_ai' && !c.ai_deep_analysis);
+  } else if(sub === 'analyzing') {
+    return courses.filter(c => c.ai_analysis_status === 'analyzing');
+  } else if(sub === 'done') {
+    return courses.filter(c => c.ai_analysis_status === 'success');
+  } else if(sub === 'failed') {
+    return courses.filter(c => c.ai_analysis_status === 'failed');
+  }
+  return courses.filter(c => c.analysis_depth === 'report_deep_ai' && !c.ai_deep_analysis);
+}
+
+window.setAiSubTab = function(tab) {
+  adminState.aiSubTab = tab;
+  adminState.aiAnalysisPage = 1;
+  renderAdmin();
+};
+
+window.retryAllFailedAiAnalysis = async function() {
+  const failed = getCourses().filter(c => c.ai_analysis_status === 'failed');
+  if(!failed.length) return;
+  if(!confirm(`确定重试 ${failed.length} 个失败的 AI 分析？`)) return;
+  for(const c of failed) {
+    await sbClient.from('courses').update({
+      ai_analysis_status: 'pending',
+      ai_analysis_error: '',
+      ai_deep_analysis: '',
+      ai_action_suggestions: ''
+    }).eq('course_id', c.course_id);
+    if(c.import_batch_id) {
+      await sbClient.rpc('increment_batch_count', {
+        batch_id: c.import_batch_id,
+        field: 'ai_analysis_failed',
+        delta: -1
+      }).catch(()=>{});
+    }
+  }
+  await refreshData();
+  renderAdmin();
+  // 自动触发批量分析
+  window.batchAnalyzeReady();
+};
+
+window.retrySingleAiAnalysis = async function(courseId) {
+  const course = getCourses().find(c => c.course_id === courseId);
+  if(!course) return;
+  await sbClient.from('courses').update({
+    ai_analysis_status: 'pending',
+    ai_analysis_error: '',
+    ai_deep_analysis: '',
+    ai_action_suggestions: ''
+  }).eq('course_id', courseId);
+  if(course.import_batch_id) {
+    await sbClient.rpc('increment_batch_count', {
+      batch_id: course.import_batch_id,
+      field: 'ai_analysis_failed',
+      delta: -1
+    }).catch(()=>{});
+  }
+  await refreshData();
+  renderAdmin();
+  window.analyzeSingleCourse(courseId);
 };
 
 window.batchAnalyzeReady = async function() {
@@ -2171,6 +2531,8 @@ window.batchAnalyzeReady = async function() {
   let failedCount = 0;
 
   for(const c of courses) {
+    // 标记分析中
+    await sbClient.from('courses').update({ ai_analysis_status: 'analyzing' }).eq('course_id', c.course_id);
     const result = await callAiAnalysis(c);
     if(result.success) {
       const aiData = result.data;
@@ -2178,6 +2540,8 @@ window.batchAnalyzeReady = async function() {
         ai_deep_analysis: (aiData.ai_second_opinion || '').substring(0, 500),
         ai_action_suggestions: JSON.stringify(aiData),
         analysis_depth: 'report_deep_ai',
+        ai_analysis_status: 'success',
+        ai_analysis_error: '',
         risk_level: aiData.risk_level || c.risk_level || '',
         needs_video_review: !!aiData.suggest_video_review,
         needs_audio_transcript: !!aiData.suggest_audio_transcript,
@@ -2191,8 +2555,28 @@ window.batchAnalyzeReady = async function() {
         updates.ai_layer = '重点提升课';
       }
       await sbClient.from('courses').update(updates).eq('course_id', c.course_id);
+      // 批次回写
+      if(c.import_batch_id) {
+        await sbClient.rpc('increment_batch_count', {
+          batch_id: c.import_batch_id,
+          field: 'ai_analysis_done',
+          delta: 1
+        }).catch(()=>{});
+      }
       successCount++;
     } else {
+      await sbClient.from('courses').update({
+        ai_analysis_status: 'failed',
+        ai_analysis_error: result.error || '未知错误',
+        updated_at: now()
+      }).eq('course_id', c.course_id);
+      if(c.import_batch_id) {
+        await sbClient.rpc('increment_batch_count', {
+          batch_id: c.import_batch_id,
+          field: 'ai_analysis_failed',
+          delta: 1
+        }).catch(()=>{});
+      }
       failedCount++;
     }
     done++;
@@ -2201,6 +2585,8 @@ window.batchAnalyzeReady = async function() {
     if(progressText) progressText.textContent = done + ' / ' + courses.length + '（成功 ' + successCount + '，失败 ' + failedCount + '）';
   }
 
+  // 最终统计同步
+  await syncBatchStatsFromCourses();
   await refreshData();
   renderAdmin();
   alert(`🎉 批量分析完成！\n\n成功：${successCount} 节\n失败：${failedCount} 节\n总用时约 ${Math.ceil(courses.length * 3)} 秒`);
@@ -2245,6 +2631,15 @@ window.openAISettings = function() {
             <input class="form-input" id="aiModel" placeholder="moonshot-v1-8k" value="${escapeHtml(cfg.model||'')}">
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px">
               示例：moonshot-v1-8k / gpt-4o-mini / qwen-turbo
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">报告抓取代理 URL</label>
+            <input class="form-input" id="aiProxyUrl" placeholder="https://api.allorigins.win/raw?url=" value="${escapeHtml(cfg.proxyUrl||DEFAULT_PROXY_URL)}">
+            <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;line-height:1.5">
+              ClassIn 报告因 CORS 限制无法直接 fetch，需通过代理服务器转发。<br>
+              默认：https://api.allorigins.win/raw?url= （第三方公共代理，不稳定）<br>
+              可选：corsproxy.io / self built proxy / 留空则直连（不推荐）
             </div>
           </div>
           <div id="aiTestStatus"></div>
@@ -2301,11 +2696,12 @@ window.saveAISettings = function() {
   const base = document.getElementById('aiApiBase').value.trim();
   const key = document.getElementById('aiApiKey').value.trim();
   const model = document.getElementById('aiModel').value.trim();
+  const proxyUrl = (document.getElementById('aiProxyUrl')?.value || '').trim();
   if(!base || !key || !model) {
     alert('请填写完整配置');
     return;
   }
-  saveAiConfig({ apiBase: base, apiKey: key, model: model });
+  saveAiConfig({ apiBase: base, apiKey: key, model: model, proxyUrl: proxyUrl });
   closeAISettings();
   alert('✅ AI 配置已保存');
   renderAdmin();
@@ -2469,10 +2865,14 @@ function renderFocusCoursesTab(container) {
   const courses = getCourses();
 
   // 重点提升课 + 异常课 + 高风险
-  const keyImprove = courses.filter(c => (c.ai_layer === '重点提升课' || c.ai_layer === '重点提升课候选'));
-  const keyAbnormal = courses.filter(c => c.ai_layer === '异常课');
-  const highRisk = courses.filter(c => c.risk_level === 'high' || c.risk_level === 'critical');
-  const needLeader = courses.filter(c => c.needs_leader_review);
+  // 批次筛选
+  const batchFilter = adminState.focusBatchId || '';
+  const filteredCourses = batchFilter ? courses.filter(c => c.import_batch_id === batchFilter) : courses;
+
+  const keyImprove = filteredCourses.filter(c => (c.ai_layer === '重点提升课' || c.ai_layer === '重点提升课候选'));
+  const keyAbnormal = filteredCourses.filter(c => c.ai_layer === '异常课');
+  const highRisk = filteredCourses.filter(c => c.risk_level === 'high' || c.risk_level === 'critical');
+  const needLeader = filteredCourses.filter(c => c.needs_leader_review);
 
   const activeSubTab = adminState.focusSubTab || 'improve';
   let listData = [];
@@ -2499,11 +2899,18 @@ function renderFocusCoursesTab(container) {
 
     <div class="card">
       <div class="card-header">
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="tab-btn ${activeSubTab==='improve'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setFocusSubTab('improve')">重点提升课 (${keyImprove.length})</button>
           <button class="tab-btn ${activeSubTab==='abnormal'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setFocusSubTab('abnormal')">异常课 (${keyAbnormal.length})</button>
           <button class="tab-btn ${activeSubTab==='highRisk'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setFocusSubTab('highRisk')">高风险 (${highRisk.length})</button>
           <button class="tab-btn ${activeSubTab==='leader'?'active':''}" style="font-size:13px;padding:6px 14px" onclick="setFocusSubTab('leader')">需复审 (${needLeader.length})</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:12px;color:var(--color-text-secondary)">批次：</span>
+          <select class="form-select" style="padding:4px 8px;font-size:12px" onchange="setFocusBatchFilter(this.value)">
+            <option value="">全部批次</option>
+            ${getBatches().map(b => `<option value="${b.id}" ${adminState.focusBatchId===b.id?'selected':''}>${escapeHtml(b.file_name||b.id)}</option>`).join('')}
+          </select>
         </div>
       </div>
       <div class="card-body" style="padding:0">
@@ -2562,6 +2969,12 @@ window.setFocusSubTab = function(tab) {
   renderAdmin();
 };
 
+window.setFocusBatchFilter = function(batchId) {
+  adminState.focusBatchId = batchId;
+  adminState.focusPage = 1;
+  renderAdmin();
+};
+
 window.goFocusPage = function(p) { adminState.focusPage = p; renderAdmin(); };
 
 // =========== 6. COURSE DETAIL TAB (单课详情) ===========
@@ -2570,8 +2983,12 @@ function renderCourseDetailTab(container) {
   const selectedId = adminState.detailCourseId;
   const course = selectedId ? courses.find(c => c.course_id === selectedId) : null;
 
+  // 批次筛选
+  const detailBatchFilter = adminState.detailBatchId || '';
+  const detailFiltered = detailBatchFilter ? courses.filter(c => c.import_batch_id === detailBatchFilter) : courses;
+
   // 展示待处理的重点提升课列表（左侧选择）
-  const improveCourses = courses.filter(c =>
+  const improveCourses = detailFiltered.filter(c =>
     c.ai_layer === '重点提升课' ||
     c.ai_layer === '重点提升课候选' ||
     c.ai_layer === '异常课' ||
@@ -2583,6 +3000,13 @@ function renderCourseDetailTab(container) {
     <div class="detail-layout">
       <!-- 左侧：课程列表 -->
       <div>
+        <div class="filter-bar" style="padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md);margin-bottom:8px">
+          <span style="font-size:12px;color:var(--color-text-secondary)">批次：</span>
+          <select class="form-select" style="flex:1;padding:4px 8px;font-size:12px" onchange="setDetailBatchFilter(this.value)">
+            <option value="">全部批次</option>
+            ${getBatches().map(b => `<option value="${b.id}" ${adminState.detailBatchId===b.id?'selected':''}>${escapeHtml(b.file_name||b.id)}</option>`).join('')}
+          </select>
+        </div>
         <div class="card" style="margin-bottom:12px">
           <div class="card-header"><h3>📋 选择课程</h3></div>
           <div class="card-body" style="padding:8px;max-height:500px;overflow-y:auto">
@@ -2650,6 +3074,19 @@ function renderCourseDetailContent(course) {
       <div class="card-header"><h3>📝 ClassIn AI 标注问题</h3></div>
       <div class="card-body">
         <p style="font-size:13px;line-height:1.7;color:var(--color-text)">${escapeHtml(course.classin_ai_issues || '（无）')}</p>
+        ${course.report_structured_json ? (() => {
+          const s = safeJsonParse(course.report_structured_json, {});
+          let html = '<details style="margin-top:12px" open><summary style="cursor:pointer;font-size:12px;color:var(--color-text-secondary)">📊 报告结构化解析结果</summary><div style="margin-top:8px;padding:12px;background:var(--color-bg);border-radius:var(--radius-sm);font-size:12px;line-height:1.8">';
+          if(s.score != null) html += '<div><strong>AI 分数：</strong>' + s.score + ' 分</div>';
+          if(s.issue_summary) html += '<div><strong>需关注问题：</strong>' + escapeHtml(s.issue_summary) + '</div>';
+          if(s.interaction_summary) html += '<div><strong>课堂互动：</strong>' + escapeHtml(s.interaction_summary) + '</div>';
+          if(s.teacher_behavior) html += '<div><strong>教师表现：</strong>' + escapeHtml(s.teacher_behavior) + '</div>';
+          if(s.student_participation) html += '<div><strong>学生参与：</strong>' + escapeHtml(s.student_participation) + '</div>';
+          if(s.raw_sections && s.raw_sections.length) html += '<div><strong>章节列表：</strong>' + s.raw_sections.map(x=>escapeHtml(x)).join(' / ') + '</div>';
+          html += '</div></details>';
+          return html;
+        })() : ''}
+
         ${course.report_raw_text ? `
           <details style="margin-top:12px">
             <summary style="cursor:pointer;font-size:12px;color:var(--color-text-secondary)">展开报告原文（${course.report_raw_text.length} 字）</summary>
@@ -2730,6 +3167,12 @@ function renderCourseDetailContent(course) {
 
 window.selectDetailCourse = function(id) {
   adminState.detailCourseId = id;
+  renderAdmin();
+};
+
+window.setDetailBatchFilter = function(batchId) {
+  adminState.detailBatchId = batchId;
+  adminState.detailCourseId = null;
   renderAdmin();
 };
 
@@ -3004,7 +3447,154 @@ window.copyLink = function(token) {
   });
 };
 
-// =========== 8. EXPORT TAB (导出中心) ===========
+// =========== 8. BATCHES TAB (批次管理) ===========
+function renderBatchesTab(container) {
+  const batches = getBatches();
+  const courses = getCourses();
+
+  container.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <h3>📦 导入批次列表</h3>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm btn-default" onclick="syncAllBatchStats()">🔄 刷新全部统计</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="table-wrap" style="border:none;border-radius:0">
+          <table>
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>导入时间</th>
+                <th>总条数</th>
+                <th>有效课程</th>
+                <th>有报告</th>
+                <th>无报告</th>
+                <th>读取成功</th>
+                <th>读取失败</th>
+                <th>AI完成</th>
+                <th>AI失败</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${batches.length ? batches.map(b => `
+                <tr>
+                  <td style="font-weight:500">${escapeHtml(b.file_name||'未命名批次')}</td>
+                  <td>${formatDate(b.imported_at)}</td>
+                  <td>${b.total_rows||0}</td>
+                  <td>${b.valid_course_rows||0}</td>
+                  <td>${b.rows_with_report_link||0}</td>
+                  <td>${b.rows_without_report_link||0}</td>
+                  <td><span class="tag tag-green">${b.fetch_success_count||0}</span></td>
+                  <td><span class="tag tag-red">${b.fetch_failed_count||0}</span></td>
+                  <td><span class="tag tag-blue">${b.ai_analysis_done||0}</span></td>
+                  <td><span class="tag tag-orange">${b.ai_analysis_failed||0}</span></td>
+                  <td style="white-space:nowrap">
+                    <button class="btn btn-sm btn-default" onclick="viewBatchCourses('${b.id}')">查看课程</button>
+                    <button class="btn btn-sm btn-default" onclick="refreshBatchStats('${b.id}')">刷新统计</button>
+                    <button class="btn btn-sm btn-danger" onclick="confirmDeleteBatch('${b.id}')">删除</button>
+                  </td>
+                </tr>
+              `).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--color-text-muted)">暂无批次</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="batchCourseList"></div>
+  `;
+}
+
+window.viewBatchCourses = function(batchId) {
+  const batch = getBatches().find(b => b.id === batchId);
+  const batchCourses = getCourses().filter(c => c.import_batch_id === batchId);
+  const container = document.getElementById('batchCourseList');
+  if(!container) return;
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <h3>📋 批次课程：${escapeHtml(batch?.file_name||batchId)}（${batchCourses.length} 节）</h3>
+        <button class="btn btn-sm btn-default" onclick="document.getElementById('batchCourseList').innerHTML=''">关闭</button>
+      </div>
+      <div class="card-body" style="padding:0;max-height:400px;overflow-y:auto">
+        <div class="table-wrap" style="border:none;border-radius:0">
+          <table>
+            <thead><tr><th>课程名称</th><th>科目</th><th>老师</th><th>AI分数</th><th>分层</th><th>报告状态</th><th>AI分析状态</th><th>操作</th></tr></thead>
+            <tbody>
+              ${batchCourses.slice(0, 100).map(c => `
+                <tr>
+                  <td style="font-weight:500">${escapeHtml(c.course_name||'-')}</td>
+                  <td>${escapeHtml(c.subject||'-')}</td>
+                  <td>${escapeHtml(c.teacher_name||'-')}</td>
+                  <td style="font-family:var(--font-mono)">${c.ai_score != null ? c.ai_score : '-'}</td>
+                  <td><span class="tag ${getLayerTagClass(c.ai_layer)}">${c.ai_layer||'-'}</span></td>
+                  <td>${getFetchStatusDot(c.report_fetch_status)}${getFetchStatusLabel(c.report_fetch_status)}</td>
+                  <td>${getAiStatusDot(c.ai_analysis_status)}${getAiStatusLabel(c.ai_analysis_status)}</td>
+                  <td><button class="btn btn-sm btn-default" onclick="viewCourseDetailAdmin('${c.course_id}')">详情</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${batchCourses.length > 100 ? '<div style="padding:12px;text-align:center;font-size:12px;color:var(--color-text-muted)">仅展示前 100 条，请到「课程详情」页查看全部</div>' : ''}
+      </div>
+    </div>
+  `;
+};
+
+window.confirmDeleteBatch = function(batchId) {
+  const batch = getBatches().find(b => b.id === batchId);
+  const count = getCourses().filter(c => c.import_batch_id === batchId).length;
+  if(!confirm(`⚠️ 危险操作！\n\n确定删除批次「${batch?.file_name||batchId}」？\n\n将同时删除该批次下 ${count} 节课程数据。\n此操作不可恢复！`)) return;
+  doDeleteBatch(batchId);
+};
+
+window.doDeleteBatch = async function(batchId) {
+  try {
+    showLoading('正在删除批次...');
+    // 删除批次下所有课程
+    await sbClient.from('courses').delete().eq('import_batch_id', batchId);
+    // 删除批次记录
+    await sbClient.from('import_batches').delete().eq('id', batchId);
+    await refreshData();
+    hideLoading();
+    renderAdmin();
+    alert('✅ 批次已删除');
+  } catch(e) {
+    hideLoading();
+    alert('删除失败：' + e.message);
+  }
+};
+
+window.syncAllBatchStats = async function() {
+  showLoading('正在刷新批次统计...');
+  await syncBatchStatsFromCourses();
+  await refreshData();
+  hideLoading();
+  renderAdmin();
+  alert('✅ 全部批次统计已刷新');
+};
+
+// AI 分析状态显示
+function getAiStatusDot(status) {
+  const colors = {
+    'pending': 'background:#9ca3af',
+    'analyzing': 'background:var(--color-warning)',
+    'success': 'background:var(--color-success)',
+    'failed': 'background:var(--color-danger)',
+    'none': 'background:transparent'
+  };
+  return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;' + (colors[status]||colors.pending) + '"></span>';
+}
+function getAiStatusLabel(status) {
+  const map = { pending:'待分析', analyzing:'分析中', success:'已完成', failed:'失败', none:'无需分析' };
+  return map[status] || status || '-';
+}
+
+// =========== 9. EXPORT TAB (导出中心) ===========
 function renderExportTab(container) {
   const courses = getCourses();
   const batches = getBatches();

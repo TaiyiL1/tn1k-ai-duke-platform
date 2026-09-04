@@ -557,11 +557,11 @@ function showToast(msg, type) {
 
 // =========== SUBJECT DETECTION ===========
 const SUBJECT_KEYWORDS = {
-  '心理健康': ['心理','心理健康','情绪','情商','社交','性格','自我','成长','生命教育'],
-  '趣味阅读': ['阅读','趣味阅读','语文','绘本','故事','共读','读写','识字','作文'],
-  '美术': ['美术','绘画','画画','艺术','手工','折纸','创意美术','画画'],
-  '趣味科学': ['科学','趣味科学','实验','自然','科普','物理','化学','生物','探索'],
-  '音乐': ['音乐','歌唱','律动','节奏','乐器','do re mi','哆来咪','声乐']
+  '心理健康': ['心理','健康','情绪','心灵'],
+  '趣味阅读': ['阅读','语文','读书','绘本'],
+  '美术': ['美术','绘画','画画','艺术','画'],
+  '趣味科学': ['科学','实验','科普','STEM'],
+  '音乐': ['音乐','唱歌','声乐','乐器']
 };
 
 function detectSubject(text) {
@@ -587,9 +587,9 @@ function detectSubjectFromFields(className, classLabel, courseName) {
   }
   if(courseName) {
     const s = detectSubject(courseName);
-    if(s) return { subject: s, from: 'course_name' };
+    if(s) return { subject: s, from: 'classroom_name' };
   }
-  return { subject: '', from: 'unmatched' };
+  return { subject: '未识别', from: 'undetected' };
 }
 
 // =========== CLASSIFICATION (v1.0 6 分层) ===========
@@ -1435,15 +1435,17 @@ function handleClassInFile(file) {
 }
 
 function processClassInRows(rows, fileName) {
-  // 扫描前10行，寻找表头行（同时含"课堂ID/课堂名称"和"报告链接"）
+  // 扫描前10行，寻找表头行（同时含"课堂ID"（含空格变体）+ "课堂名称" + "报告链接"）
   let headerRowIndex = -1;
   for(let i = 0; i < Math.min(rows.length, 10); i++) {
     const row = rows[i] || [];
-    const rowStr = row.map(c => (c||'').toString().trim()).join('|').toLowerCase();
+    // 每个单元格去除 BOM、空格并小写化
+    const cells = row.map(c => (c||'').toString().replace(/^\uFEFF/, '').trim().toLowerCase().replace(/\s+/g, ''));
+    const rowStr = cells.join('|');
     const hasClassId = rowStr.includes('课堂id') || rowStr.includes('课堂编号');
     const hasClassName = rowStr.includes('课堂名称');
     const hasReportLink = rowStr.includes('报告链接');
-    if(hasReportLink && (hasClassId || hasClassName) && row.filter(c=>c&&c.toString().trim()).length >= 10) {
+    if(hasReportLink && hasClassId && hasClassName && cells.filter(c=>c).length >= 10) {
       headerRowIndex = i;
       break;
     }
@@ -1454,7 +1456,7 @@ function processClassInRows(rows, fileName) {
     return;
   }
 
-  const headers = rows[headerRowIndex].map(c => (c||'').toString().trim());
+  const headers = rows[headerRowIndex].map(c => (c||'').toString().replace(/^\uFEFF/, '').trim());
   const dataRows = rows.slice(headerRowIndex + 1).filter(r => r && r.some(c => c && c.toString().trim()));
 
   // 列名映射
@@ -1475,8 +1477,9 @@ function processClassInRows(rows, fileName) {
 }
 
 function mapClassInColumn(header) {
-  const h = header.trim().toLowerCase();
-  // 精确匹配优先
+  // 去除 BOM、首尾空格、所有空白字符后小写化，统一匹配
+  const h = header.toString().replace(/^\uFEFF/, '').trim().replace(/\s+/g, '').toLowerCase();
+  // 精确匹配优先（去掉空格后的标准列名）
   const exactMap = {
     '课堂id': 'classin_class_id',
     '课堂名称': 'classin_class_name',
@@ -1501,8 +1504,11 @@ function mapClassInColumn(header) {
   if(h.includes('课堂名称') || (h.includes('课堂') && h.includes('名'))) return 'classin_class_name';
   if(h.includes('班级名称') || (h.includes('班级') && h.includes('名'))) return 'class_name';
   if(h.includes('开课时间') || h.includes('上课时间')) return 'lesson_time';
+  if(h.includes('结束时间')) return 'end_time';
   if(h.includes('课堂时长') || h.includes('时长')) return 'duration';
   if(h.includes('教师姓名') || h.includes('授课老师') || (h.includes('教师') && h.includes('名'))) return 'teacher_name';
+  if(h.includes('教师手机') || h.includes('老师手机') || (h.includes('教师') && h.includes('电话'))) return 'teacher_phone';
+  if(h.includes('教师邮箱') || h.includes('老师邮箱') || (h.includes('教师') && h.includes('email'))) return 'teacher_email';
   if(h.includes('课堂标签') || h.includes('标签')) return 'classin_class_label';
   if(h.includes('ai') && h.includes('得分')) return 'classin_ai_score';
   if(h.includes('需关注') || (h.includes('问题') && h.includes('ai'))) return 'classin_ai_issues';
@@ -1520,6 +1526,20 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
   const sampleRows = dataRows.slice(0, 5);
   const mappedCount = Object.keys(mapping).length;
 
+  // 计算预览统计（有/无报告链接）
+  const reportUrlIdx = Object.entries(mapping).find(([k,v]) => v.field === 'classin_report_url');
+  const ri = reportUrlIdx ? Number(reportUrlIdx[0]) : -1;
+  let previewStats = { withReport: 0, withoutReport: 0 };
+  if(ri >= 0) {
+    dataRows.forEach(row => {
+      const url = (row[ri]||'').toString().trim();
+      if(url && url !== '') previewStats.withReport++;
+      else previewStats.withoutReport++;
+    });
+  } else {
+    previewStats.withoutReport = dataRows.length;
+  }
+
   // 自动科目识别预览
   const labelIdx = Object.entries(mapping).find(([k,v]) => v.field === 'classin_class_label');
   const nameIdx = Object.entries(mapping).find(([k,v]) => v.field === 'classin_class_name');
@@ -1531,12 +1551,12 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
     const ni = nameIdx ? Number(nameIdx[0]) : -1;
     const ci = classNameIdx ? Number(classNameIdx[0]) : -1;
     const detected = {};
-    dataRows.slice(0, 20).forEach(row => {
+    dataRows.forEach(row => {
       const label = li >= 0 ? (row[li]||'').toString() : '';
       const cname = ci >= 0 ? (row[ci]||'').toString() : '';
       const kname = ni >= 0 ? (row[ni]||'').toString() : '';
       const { subject } = detectSubjectFromFields(cname, label, kname);
-      if(subject) detected[subject] = (detected[subject]||0) + 1;
+      detected[subject] = (detected[subject]||0) + 1;
     });
     subjectPreview = Object.entries(detected).map(([s,c]) => `<span class="tag tag-blue">${s}: ${c}节</span>`).join('');
   }
@@ -1547,6 +1567,25 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
         ✅ 识别成功：第 ${headerRowIndex + 1} 行为表头，共 ${dataRows.length} 条数据，已匹配 ${mappedCount} 个字段
       </div>
       <h4 style="font-size:14px;margin:12px 0 8px">📋 文件：${escapeHtml(fileName)}</h4>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+        <div style="padding:12px;background:var(--color-primary-bg);border-radius:var(--radius-sm);text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--color-primary)">${dataRows.length}</div>
+          <div style="font-size:12px;color:var(--color-text-secondary)">总课程数</div>
+        </div>
+        <div style="padding:12px;background:var(--color-success-bg);border-radius:var(--radius-sm);text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--color-success)">${previewStats.withReport}</div>
+          <div style="font-size:12px;color:var(--color-text-secondary)">有报告链接</div>
+        </div>
+        <div style="padding:12px;background:var(--color-warning-bg);border-radius:var(--radius-sm);text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--color-warning)">${previewStats.withoutReport}</div>
+          <div style="font-size:12px;color:var(--color-text-secondary)">无报告链接</div>
+        </div>
+        <div style="padding:12px;background:var(--color-purple-bg);border-radius:var(--radius-sm);text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--color-purple)">第 ${headerRowIndex + 1} 行</div>
+          <div style="font-size:12px;color:var(--color-text-secondary)">表头行号</div>
+        </div>
+      </div>
 
       ${unmapped.length ? `<div style="padding:10px 14px;background:var(--color-warning-bg);border:1px solid #fde68a;border-radius:var(--radius-sm);font-size:12px;margin-bottom:12px;color:#92400e">
         未匹配的列（将忽略）：${unmapped.join('、')}
@@ -1561,7 +1600,7 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
         `).join('')}
       </div>
 
-      ${subjectPreview ? `<div style="margin-bottom:8px;font-size:13px;font-weight:500">科目识别预览（前20条）：</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${subjectPreview}</div>` : ''}
+      ${subjectPreview ? `<div style="margin-bottom:8px;font-size:13px;font-weight:500">📊 科目识别分布（全部 ${dataRows.length} 条）：</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${subjectPreview}</div>` : ''}
 
       <div class="alert-box alert-info" style="margin-bottom:12px">
         💡 <strong>报告抓取说明</strong>：导入后将自动尝试抓取 ClassIn 报告内容，但自动抓取依赖 CORS 代理服务器（在「AI设置」中配置）。
@@ -1587,6 +1626,36 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
 window.confirmClassInImport = async function() {
   const { rawRows, headers, mapping, fileName } = uploadState;
   if(!rawRows || !mapping) return;
+
+  // ===== Schema 预检：检查 courses 表 v1.0 必需字段是否存在 =====
+  const REQUIRED_V1_FIELDS = [
+    'ai_action_suggestions','ai_deep_analysis','analysis_depth','ai_analysis_status',
+    'ai_analysis_error','report_fetch_status','report_fetch_error','report_raw_text',
+    'report_structured_json','risk_level','needs_video_review','needs_audio_transcript',
+    'needs_leader_review','subject_detected_from','import_batch_id',
+    'classin_class_id','classin_class_name','classin_class_label','classin_ai_score',
+    'classin_ai_issues','classin_report_url','classin_replay_url'
+  ];
+  try {
+    const { error } = await sbClient.from('courses')
+      .select(REQUIRED_V1_FIELDS.join(','))
+      .limit(0);
+    if(error) {
+      // Postgres error code 42703 = undefined_column
+      const pgCode = error.code || (error.error && error.error.code) || '';
+      const isMissingCol = pgCode === '42703' ||
+        (error.message && (error.message.includes('column') && error.message.includes('does not exist'))) ||
+        (error.details && error.details.includes('column'));
+      if(isMissingCol) {
+        alert('❌ 数据库缺少必需字段\n\n请先在 Supabase SQL Editor 执行 docs/db-migration-v1.0.sql，执行后等待约 1 分钟让 schema cache 自动刷新，再重新导入。\n\n提示：如果刚执行完 SQL，请稍等一分钟再试（schema cache 需要刷新时间）。');
+        return;
+      }
+      // 其他错误（如权限）也提示
+      console.error('Schema precheck error:', error);
+    }
+  } catch(precheckErr) {
+    console.warn('Schema precheck exception (non-blocking):', precheckErr);
+  }
 
   // 构建反向映射：field -> column index
   const fieldToIdx = {};
@@ -1620,7 +1689,7 @@ window.confirmClassInImport = async function() {
     const replayUrl = getVal('classin_replay_url');
     const issues = getVal('classin_ai_issues');
 
-    if(reportUrl && reportUrl !== '') withReport++;
+    if(reportUrl && reportUrl.trim() !== '') withReport++;
     else withoutReport++;
 
     if(subject) subjectCount[subject] = (subjectCount[subject]||0) + 1;
@@ -1660,7 +1729,7 @@ window.confirmClassInImport = async function() {
       created_at: now(),
       updated_at: now(),
       // v1.0 新字段
-      report_fetch_status: reportUrl ? 'pending' : 'none',
+      report_fetch_status: (reportUrl && reportUrl.trim() !== '') ? 'pending' : 'none',
       report_fetch_error: '',
       report_raw_text: '',
       report_structured_json: {},

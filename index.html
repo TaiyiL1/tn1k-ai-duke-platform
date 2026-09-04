@@ -729,6 +729,13 @@ function getProxyUrl() {
   const cfg = getAiConfig();
   return cfg.proxyUrl || DEFAULT_PROXY_URL;
 }
+function getReportApiUrl() {
+  const cfg = getAiConfig();
+  return cfg.reportApiUrl || '';
+}
+function hasReportBackend() {
+  return !!getReportApiUrl();
+}
 
 // =========== LOADING STATES ===========
 function showLoading(text) {
@@ -1576,6 +1583,7 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
         <div style="padding:12px;background:var(--color-success-bg);border-radius:var(--radius-sm);text-align:center">
           <div style="font-size:20px;font-weight:700;color:var(--color-success)">${previewStats.withReport}</div>
           <div style="font-size:12px;color:var(--color-text-secondary)">有报告链接</div>
+          <div style="font-size:10px;color:var(--color-text-muted);margin-top:4px">需配置后端 API 才能自动读取</div>
         </div>
         <div style="padding:12px;background:var(--color-warning-bg);border-radius:var(--radius-sm);text-align:center">
           <div style="font-size:20px;font-weight:700;color:var(--color-warning)">${previewStats.withoutReport}</div>
@@ -1603,8 +1611,8 @@ function showImportPreview(dataRows, headers, mapping, fileName, headerRowIndex)
       ${subjectPreview ? `<div style="margin-bottom:8px;font-size:13px;font-weight:500">📊 科目识别分布（全部 ${dataRows.length} 条）：</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${subjectPreview}</div>` : ''}
 
       <div class="alert-box alert-info" style="margin-bottom:12px">
-        💡 <strong>报告抓取说明</strong>：导入后将自动尝试抓取 ClassIn 报告内容，但自动抓取依赖 CORS 代理服务器（在「AI设置」中配置）。
-        如代理不可用，请使用报告队列中的「手动粘贴」功能兜底。
+        💡 <strong>报告抓取说明</strong>：导入后将自动尝试抓取 ClassIn 报告内容，但自动抓取依赖后端 API（在「AI设置」中配置报告读取后端 API URL）。
+        需配置后端 API 才能自动读取，如未配置请使用报告队列中的「手动粘贴」功能兜底。
       </div>
 
       <div class="preview-table-wrap">
@@ -1826,16 +1834,16 @@ function renderReportFetchTab(container) {
     </div>
 
     <div class="alert-box alert-info" style="margin-bottom:12px">
-      💡 <strong>关于自动抓取</strong>：自动抓取依赖 CORS 代理服务器（在「AI设置」中配置代理URL）。
-      公共代理不稳定，如不可用请使用「手动粘贴」功能兜底。请勿宣称"已实现自动读取"。
+      💡 <strong>关于自动读取</strong>：自动读取需配置后端 API（Supabase Edge Function / Cloudflare Worker）。
+      在「AI设置」中配置报告读取后端 API URL。未配置时请使用「手动粘贴」功能兜底。
     </div>
 
     <div class="card">
       <div class="card-header">
         <h3>📄 报告读取队列</h3>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-sm btn-primary" onclick="fetchAllPendingReports()" ${pending===0?'disabled':''}>▶️ 批量读取待处理 (${pending})</button>
-          <button class="btn btn-sm btn-default" onclick="retryAllFailedReports()" ${failed===0?'disabled':''}>🔄 重试失败 (${failed})</button>
+          <button class="btn btn-sm btn-primary" onclick="fetchAllPendingReports()" ${pending===0||!hasReportBackend()?'disabled':''}>▶️ 批量读取待处理 (${pending})</button>
+          <button class="btn btn-sm btn-default" onclick="retryAllFailedReports()" ${failed===0||!hasReportBackend()?'disabled':''}>🔄 重试失败 (${failed})</button>
         </div>
       </div>
       <div class="card-body" style="padding:0">
@@ -1862,7 +1870,7 @@ function renderReportFetchTab(container) {
                   <td>${c.classin_report_url ? `<a href="${escapeHtml(c.classin_report_url)}" target="_blank" class="btn-link">查看报告</a>` : '-'}</td>
                   <td style="font-size:12px;color:var(--color-danger);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.report_fetch_error||'')}">${escapeHtml(c.report_fetch_error||'-')}</td>
                   <td>
-                    <button class="btn btn-sm btn-default" onclick="fetchSingleReport('${c.course_id}')">读取</button>
+                    <button class="btn btn-sm btn-default" onclick="fetchSingleReport('${c.course_id}')" ${!hasReportBackend()?'disabled':''}>读取</button>
                     <button class="btn btn-sm btn-default" onclick="openPasteReportModal('${c.course_id}')">粘贴</button>
                   </td>
                 </tr>
@@ -1891,46 +1899,55 @@ window.goReportPage = function(p) { adminState.reportFetchPage = p; renderAdmin(
 
 // --- 报告抓取 ---
 async function fetchReportContent(url) {
-  const proxyUrl = getProxyUrl();
-  let lastError = '';
+  const apiUrl = getReportApiUrl();
 
-  // 方式一：通过代理请求（优先）
-  if(proxyUrl) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
-      const proxiedUrl = proxyUrl + encodeURIComponent(url);
-      const resp = await fetch(proxiedUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if(!resp.ok) throw new Error('代理返回 HTTP ' + resp.status);
-      const text = await resp.text();
-      if(text && text.length > 100) {
-        return { success: true, text: text, via: 'proxy' };
-      }
-      lastError = '代理返回内容过短';
-    } catch(e) {
-      lastError = '代理失败：' + e.message;
-      console.warn('[fetchReport] proxy failed:', e.message);
-    }
+  // 未配置后端 → 直接返回 no_backend 错误
+  if(!apiUrl) {
+    return {
+      success: false,
+      error: '当前未配置后端，无法自动读取 ClassIn 报告，请手动粘贴报告内容。',
+      error_type: 'no_backend'
+    };
   }
 
-  // 方式二：直连 fetch（回退）
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    const resp = await fetch(url, { signal: controller.signal, mode: 'cors' });
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    const resp = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_url: url }),
+      signal: controller.signal
+    });
     clearTimeout(timeoutId);
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    const text = await resp.text();
-    return { success: true, text: text, via: 'direct' };
-  } catch(e) {
-    const directError = e.message;
-    let finalError = lastError ? (lastError + '；直连也失败：' + directError) : directError;
-    // 判断是否 CORS 相关
-    if(directError.includes('Failed to fetch') || directError.includes('CORS') || directError.includes('NetworkError')) {
-      finalError += '（可能因CORS限制，建议使用代理服务器或手动粘贴）';
+
+    const data = await resp.json().catch(() => ({}));
+    if(data && data.success === true) {
+      return {
+        success: true,
+        text: data.raw_text || '',
+        raw_text: data.raw_text || '',
+        structured: data.structured || null,
+        via: 'backend'
+      };
     }
-    return { success: false, error: finalError };
+
+    // 后端返回业务错误
+    const errType = data?.error_type || 'parse_failed';
+    const errMsg = data?.message || ('后端返回 HTTP ' + resp.status);
+    return {
+      success: false,
+      error: errMsg,
+      error_type: errType
+    };
+  } catch(e) {
+    // 网络错误
+    return {
+      success: false,
+      error: '无法连接到后端服务，请检查 API URL 配置或网络。',
+      error_type: 'network_error',
+      detail: e.message
+    };
   }
 }
 
@@ -2042,8 +2059,11 @@ window.fetchSingleReport = async function(courseId) {
   const result = await fetchReportContent(course.classin_report_url);
 
   if(result.success) {
-    const reportText = extractReportText(result.text);
-    const structuredJson = parseReportStructured(result.text, reportText);
+    const reportText = (result.raw_text || extractReportText(result.text) || '').toString();
+    // 优先使用后端返回的结构化结果；后端未返回时前端兜底解析
+    const structuredJson = result.structured && typeof result.structured === 'object'
+      ? result.structured
+      : parseReportStructured(result.text, reportText);
     await sbClient.from('courses').update({
       report_fetch_status: 'success',
       report_fetch_error: '',
@@ -2059,9 +2079,12 @@ window.fetchSingleReport = async function(courseId) {
       }).catch(err => { console.error('increment_batch_count error:', err); });
     }
   } else {
+    const errDetail = result.error_type
+      ? `[${result.error_type}] ${result.error}`
+      : result.error;
     await sbClient.from('courses').update({
       report_fetch_status: 'failed',
-      report_fetch_error: result.error + '（可能因CORS限制，可尝试手动粘贴）'
+      report_fetch_error: errDetail
     }).eq('course_id', courseId);
     // 批次统计回写（原子递增）
     if(course.import_batch_id) {
@@ -2080,7 +2103,7 @@ window.fetchSingleReport = async function(courseId) {
 window.fetchAllPendingReports = async function() {
   const courses = getCourses().filter(c => c.report_fetch_status === 'pending' && c.classin_report_url);
   if(!courses.length) return;
-  if(!confirm(`确定批量读取 ${courses.length} 个报告？\n\n注意：受浏览器 CORS 限制，部分链接可能读取失败，可通过"手动粘贴"兜底。`)) return;
+  if(!confirm(`确定批量读取 ${courses.length} 个报告？\n\n注意：需要配置后端 API 才能自动读取，未配置时请使用"手动粘贴"。`)) return;
 
   // 顺序读取，避免并发过多
   let success = 0, failed = 0;
@@ -2089,8 +2112,11 @@ window.fetchAllPendingReports = async function() {
     await sbClient.from('courses').update({ report_fetch_status: 'fetching' }).eq('course_id', c.course_id);
     const result = await fetchReportContent(c.classin_report_url);
     if(result.success) {
-      const text = extractReportText(result.text);
-      const structuredJson = parseReportStructured(result.text, text);
+      const text = (result.raw_text || extractReportText(result.text) || '').toString();
+      // 优先使用后端返回的结构化结果；后端未返回时前端兜底解析
+      const structuredJson = result.structured && typeof result.structured === 'object'
+        ? result.structured
+        : parseReportStructured(result.text, text);
       await sbClient.from('courses').update({
         report_fetch_status: 'success',
         report_fetch_error: '',
@@ -2107,9 +2133,12 @@ window.fetchAllPendingReports = async function() {
       }
       success++;
     } else {
+      const errDetail = result.error_type
+        ? `[${result.error_type}] ${result.error}`
+        : result.error;
       await sbClient.from('courses').update({
         report_fetch_status: 'failed',
-        report_fetch_error: result.error + '（CORS限制，需手动粘贴）'
+        report_fetch_error: errDetail
       }).eq('course_id', c.course_id);
       if(c.import_batch_id) {
         await sbClient.rpc('increment_batch_count', {
@@ -2216,7 +2245,7 @@ window.openPasteReportModal = function(courseId) {
         <div class="modal-body">
           <p style="font-size:12px;color:var(--color-text-secondary);margin-bottom:12px">
             课程：<strong>${escapeHtml(course.course_name||'')}</strong><br>
-            由于浏览器 CORS 限制，部分报告链接无法自动抓取。<br>
+            未配置后端 API 或报告无法自动读取时，请手动粘贴报告内容。<br>
             请打开报告链接，复制全部文字内容，粘贴到下方：
           </p>
           <textarea class="form-textarea" id="pasteReportText" rows="16" placeholder="在此粘贴 ClassIn 报告的文本内容..."></textarea>
@@ -2850,12 +2879,15 @@ window.openAISettings = function() {
             </div>
           </div>
           <div class="form-group">
-            <label class="form-label">报告抓取代理 URL</label>
-            <input class="form-input" id="aiProxyUrl" placeholder="https://api.allorigins.win/raw?url=" value="${escapeHtml(cfg.proxyUrl||DEFAULT_PROXY_URL)}">
+            <label class="form-label">报告读取后端 API URL</label>
+            <input class="form-input" id="aiReportApiUrl" placeholder="https://nkrgknrkzkiipzeovafi.supabase.co/functions/v1/fetch-classin-report" value="${escapeHtml(cfg.reportApiUrl||'')}">
             <div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;line-height:1.5">
-              ClassIn 报告因 CORS 限制无法直接 fetch，需通过代理服务器转发。<br>
-              默认：https://api.allorigins.win/raw?url= （第三方公共代理，不稳定）<br>
-              可选：corsproxy.io / self built proxy / 留空则直连（不推荐）
+              配置后可自动读取 ClassIn AI 报告正文。支持 Supabase Edge Function / Cloudflare Worker 等后端。<br>
+              未配置时请使用「手动粘贴」功能。<a href="https://github.com/TaiyiL1/tn1k-ai-duke-platform/blob/main/docs/edge-function-setup.md" target="_blank" style="color:var(--color-primary)">部署指南 →</a>
+            </div>
+            <div style="margin-top:8px">
+              <button class="btn btn-sm btn-default" type="button" onclick="testReportBackendConnection()">测试连接</button>
+              <span id="reportApiTestStatus" style="margin-left:8px;font-size:12px"></span>
             </div>
           </div>
           <div id="aiTestStatus"></div>
@@ -2908,16 +2940,55 @@ window.testAIConnection = async function() {
   }
 };
 
+window.testReportBackendConnection = async function() {
+  const statusEl = document.getElementById('reportApiTestStatus');
+  const urlInput = document.getElementById('aiReportApiUrl');
+  const apiUrl = (urlInput?.value || '').trim();
+
+  if(!apiUrl) {
+    statusEl.innerHTML = '<span style="color:var(--color-danger)">请填写后端 API URL</span>';
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color:var(--color-warning)">⏳ 测试中...</span>';
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const resp = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_url: 'https://share.eeo.cn/test' }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    const data = await resp.json().catch(() => ({}));
+    if(data.success === true) {
+      statusEl.innerHTML = '<span style="color:var(--color-success)">✅ 连接成功！后端正常响应。</span>';
+    } else if(data.error_type === 'unsupported_domain' || data.error_type === 'parse_failed') {
+      // 测试 URL 不在白名单或 404 都算后端工作正常
+      statusEl.innerHTML = `<span style="color:var(--color-success)">✅ 连接成功！后端响应正常（${data.error_type || '业务返回'}）。</span>`;
+    } else if(data.error_type === 'auth_required') {
+      statusEl.innerHTML = `<span style="color:var(--color-warning)">⚠️ 后端可用，但报告页面需要登录（${data.message || ''}）</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--color-danger)">❌ 后端返回错误：${data.message || 'HTTP ' + resp.status}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--color-danger)">❌ 连接失败：${escapeHtml(e.message)}（请检查 URL 或网络）</span>`;
+  }
+};
+
 window.saveAISettings = function() {
   const base = document.getElementById('aiApiBase').value.trim();
   const key = document.getElementById('aiApiKey').value.trim();
   const model = document.getElementById('aiModel').value.trim();
   const proxyUrl = (document.getElementById('aiProxyUrl')?.value || '').trim();
+  const reportApiUrl = (document.getElementById('aiReportApiUrl')?.value || '').trim();
   if(!base || !key || !model) {
     alert('请填写完整配置');
     return;
   }
-  saveAiConfig({ apiBase: base, apiKey: key, model: model, proxyUrl: proxyUrl });
+  saveAiConfig({ apiBase: base, apiKey: key, model: model, proxyUrl: proxyUrl, reportApiUrl: reportApiUrl });
   closeAISettings();
   alert('✅ AI 配置已保存');
   renderAdmin();

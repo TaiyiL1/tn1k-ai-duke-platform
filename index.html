@@ -519,9 +519,41 @@ function escapeHtml(str) {
 function debounce(fn, wait) {
   let t; return function(...args){ clearTimeout(t); t = setTimeout(()=>fn.apply(this,args), wait); };
 }
-function safeJsonParse(str, fallback) {
-  try { return JSON.parse(str); } catch(e) { return fallback; }
+function safeJsonParse(val, fallback) {
+  if(val == null) return fallback;
+  if(typeof val === 'object') return val;
+  if(typeof val === 'string') {
+    if(val === '') return fallback;
+    try { return JSON.parse(val); } catch(e) { return fallback; }
+  }
+  return fallback;
 }
+// --- Toast 提示工具 ---
+function showToast(msg, type) {
+  const existing = document.getElementById('toastContainer');
+  if(existing) existing.remove();
+  const c = document.createElement('div');
+  c.id = 'toastContainer';
+  c.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;padding:12px 18px;border-radius:8px;font-size:14px;box-shadow:0 4px 16px rgba(0,0,0,0.2);max-width:360px;';
+  if(type === 'error') {
+    c.style.background = '#fee2e2';
+    c.style.color = '#991b1b';
+    c.style.border = '1px solid #fca5a5';
+  } else if(type === 'success') {
+    c.style.background = '#dcfce7';
+    c.style.color = '#166534';
+    c.style.border = '1px solid #86efac';
+  } else {
+    c.style.background = '#fff7ed';
+    c.style.color = '#92400e';
+    c.style.border = '1px solid #fdba74';
+  }
+  c.textContent = msg;
+  document.body.appendChild(c);
+  setTimeout(() => { c.style.opacity = '0'; c.style.transition = 'opacity 0.3s'; }, 2700);
+  setTimeout(() => { if(c.parentNode) c.parentNode.removeChild(c); }, 3000);
+}
+
 
 // =========== SUBJECT DETECTION ===========
 const SUBJECT_KEYWORDS = {
@@ -752,7 +784,7 @@ CREATE TABLE IF NOT EXISTS courses (
   report_fetch_status TEXT DEFAULT 'pending',
   report_fetch_error TEXT DEFAULT '',
   report_raw_text TEXT DEFAULT '',
-  report_structured_json TEXT DEFAULT '',
+  report_structured_json JSONB DEFAULT '{}'::jsonb,
   ai_deep_analysis TEXT DEFAULT '',
   ai_action_suggestions TEXT DEFAULT '',
   ai_analysis_status TEXT DEFAULT 'pending',
@@ -1631,7 +1663,7 @@ window.confirmClassInImport = async function() {
       report_fetch_status: reportUrl ? 'pending' : 'none',
       report_fetch_error: '',
       report_raw_text: '',
-      report_structured_json: '',
+      report_structured_json: {},
       ai_deep_analysis: '',
       ai_action_suggestions: '',
       ai_analysis_status: cls.depth === 'report_deep_ai' ? 'pending' : 'none',
@@ -1855,7 +1887,7 @@ function parseReportStructured(html, rawText) {
   };
 
   let text = rawText || extractReportText(html);
-  if(!text) return JSON.stringify(result);
+  if(!text) return result;
 
   // 提取分数（匹配 "得分"、"分数"、"AI 得分" 等 + 数字）
   const scorePatterns = [
@@ -1923,7 +1955,7 @@ function parseReportStructured(html, rawText) {
     }
   }
 
-  return JSON.stringify(result);
+  return result;
 }
 
 window.fetchSingleReport = async function(courseId) {
@@ -1949,11 +1981,27 @@ window.fetchSingleReport = async function(courseId) {
       report_raw_text: reportText.substring(0, 10000),
       report_structured_json: structuredJson
     }).eq('course_id', courseId);
+    // 批次统计回写（原子递增）
+    if(course.import_batch_id) {
+      await sbClient.rpc('increment_batch_count', {
+        p_batch_id: course.import_batch_id,
+        p_field: 'fetch_success_count',
+        p_delta: 1
+      }).catch(err => { console.error('increment_batch_count error:', err); });
+    }
   } else {
     await sbClient.from('courses').update({
       report_fetch_status: 'failed',
       report_fetch_error: result.error + '（可能因CORS限制，可尝试手动粘贴）'
     }).eq('course_id', courseId);
+    // 批次统计回写（原子递增）
+    if(course.import_batch_id) {
+      await sbClient.rpc('increment_batch_count', {
+        p_batch_id: course.import_batch_id,
+        p_field: 'fetch_failed_count',
+        p_delta: 1
+      }).catch(err => { console.error('increment_batch_count error:', err); });
+    }
   }
 
   await refreshData();
@@ -1967,6 +2015,7 @@ window.fetchAllPendingReports = async function() {
 
   // 顺序读取，避免并发过多
   let success = 0, failed = 0;
+  let statsSyncFailed = false;
   for(const c of courses) {
     await sbClient.from('courses').update({ report_fetch_status: 'fetching' }).eq('course_id', c.course_id);
     const result = await fetchReportContent(c.classin_report_url);
@@ -1982,10 +2031,10 @@ window.fetchAllPendingReports = async function() {
       // 批次统计回写（原子递增）
       if(c.import_batch_id) {
         await sbClient.rpc('increment_batch_count', {
-          batch_id: c.import_batch_id,
-          field: 'fetch_success_count',
-          delta: 1
-        }).catch(()=>{});
+          p_batch_id: c.import_batch_id,
+          p_field: 'fetch_success_count',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
       }
       success++;
     } else {
@@ -1995,10 +2044,10 @@ window.fetchAllPendingReports = async function() {
       }).eq('course_id', c.course_id);
       if(c.import_batch_id) {
         await sbClient.rpc('increment_batch_count', {
-          batch_id: c.import_batch_id,
-          field: 'fetch_failed_count',
-          delta: 1
-        }).catch(()=>{});
+          p_batch_id: c.import_batch_id,
+          p_field: 'fetch_failed_count',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
       }
       failed++;
     }
@@ -2008,6 +2057,9 @@ window.fetchAllPendingReports = async function() {
   await syncBatchStatsFromCourses();
   await refreshData();
   renderAdmin();
+  if(statsSyncFailed) {
+    showToast('部分批次统计同步失败，可点击批次管理页的刷新统计手动重算', 'error');
+  }
   alert(`批量读取完成：成功 ${success} 个，失败 ${failed} 个`);
 };
 
@@ -2021,10 +2073,10 @@ window.retryAllFailedReports = async function() {
     // 批次计数回退（重置时失败计数减一）
     if(c.import_batch_id) {
       await sbClient.rpc('increment_batch_count', {
-        batch_id: c.import_batch_id,
-        field: 'fetch_failed_count',
-        delta: -1
-      }).catch(()=>{});
+          p_batch_id: c.import_batch_id,
+          p_field: 'fetch_failed_count',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
     }
   }
   await refreshData();
@@ -2049,7 +2101,7 @@ async function syncBatchStatsFromCourses() {
         ai_analysis_pending: aiPending,
         ai_analysis_done: aiDone,
         ai_analysis_failed: aiFailed
-      }).eq('id', b.id).catch(()=>{});
+      }).eq('id', b.id).catch(err => { console.error('syncBatchStatsFromCourses update error:', err); });
     }
   } catch(e) {
     console.warn('syncBatchStatsFromCourses error:', e);
@@ -2114,19 +2166,37 @@ window.submitPastedReport = async function(courseId) {
   if(!text) { alert('请粘贴报告内容'); return; }
   const structuredJson = parseReportStructured(null, text);
   const course = getCourses().find(c => c.course_id === courseId);
+  const oldStatus = course ? course.report_fetch_status : 'pending';
   await sbClient.from('courses').update({
     report_fetch_status: 'success',
     report_fetch_error: '',
     report_raw_text: text.substring(0, 10000),
     report_structured_json: structuredJson
   }).eq('course_id', courseId);
-  // 批次统计回写
+  // 批次统计回写（根据旧状态判断是否需要调整，避免重复计数）
   if(course && course.import_batch_id) {
-    await sbClient.rpc('increment_batch_count', {
-      batch_id: course.import_batch_id,
-      field: 'fetch_success_count',
-      delta: 1
-    }).catch(()=>{});
+    if(oldStatus === 'success') {
+      // 状态未变化，不调整计数
+    } else if(oldStatus === 'failed') {
+      // 失败转成功：失败计数-1，成功计数+1
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'fetch_failed_count',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'fetch_success_count',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+    } else {
+      // pending / none / 其他 → 成功：成功计数+1
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'fetch_success_count',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+    }
   }
   await refreshData();
   closeModal();
@@ -2374,6 +2444,9 @@ window.analyzeSingleCourse = async function(courseId) {
     return;
   }
 
+  // 记录旧状态，避免重复计数（必须在标记为分析中之前）
+  const oldAiStatus = course.ai_analysis_status;
+
   // 标记为分析中
   await sbClient.from('courses').update({
     ai_analysis_status: 'analyzing',
@@ -2392,13 +2465,30 @@ window.analyzeSingleCourse = async function(courseId) {
       ai_analysis_error: result.error || '未知错误',
       updated_at: now()
     }).eq('course_id', courseId);
-    // 批次回写
+    // 批次回写（根据旧状态避免重复计数）
     if(course.import_batch_id) {
-      await sbClient.rpc('increment_batch_count', {
-        batch_id: course.import_batch_id,
-        field: 'ai_analysis_failed',
-        delta: 1
-      }).catch(()=>{});
+      if(oldAiStatus === 'failed') {
+        // 已算过失败，不重复计数
+      } else if(oldAiStatus === 'success') {
+        // 成功转失败（防御性处理）
+        await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_done',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+        await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_failed',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+      } else {
+        // pending / analyzing → 失败：失败计数+1
+        await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_failed',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+      }
     }
     await refreshData();
     renderAdmin();
@@ -2429,13 +2519,30 @@ window.analyzeSingleCourse = async function(courseId) {
   }
 
   await sbClient.from('courses').update(updates).eq('course_id', courseId);
-  // 批次回写
+  // 批次回写（根据旧状态避免重复计数）
   if(course.import_batch_id) {
-    await sbClient.rpc('increment_batch_count', {
-      batch_id: course.import_batch_id,
-      field: 'ai_analysis_done',
-      delta: 1
-    }).catch(()=>{});
+    if(oldAiStatus === 'success') {
+      // 已是成功状态，不重复计数
+    } else if(oldAiStatus === 'failed') {
+      // 失败转成功：失败-1，成功+1
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_failed',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_done',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+    } else {
+      // pending / analyzing → 成功：成功计数+1
+      await sbClient.rpc('increment_batch_count', {
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_done',
+          p_delta: 1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
+    }
   }
   await syncBatchStatsFromCourses();
   await refreshData();
@@ -2477,10 +2584,10 @@ window.retryAllFailedAiAnalysis = async function() {
     }).eq('course_id', c.course_id);
     if(c.import_batch_id) {
       await sbClient.rpc('increment_batch_count', {
-        batch_id: c.import_batch_id,
-        field: 'ai_analysis_failed',
-        delta: -1
-      }).catch(()=>{});
+          p_batch_id: c.import_batch_id,
+          p_field: 'ai_analysis_failed',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
     }
   }
   await refreshData();
@@ -2500,10 +2607,10 @@ window.retrySingleAiAnalysis = async function(courseId) {
   }).eq('course_id', courseId);
   if(course.import_batch_id) {
     await sbClient.rpc('increment_batch_count', {
-      batch_id: course.import_batch_id,
-      field: 'ai_analysis_failed',
-      delta: -1
-    }).catch(()=>{});
+          p_batch_id: course.import_batch_id,
+          p_field: 'ai_analysis_failed',
+          p_delta: -1
+        }).catch(err => { console.error('increment_batch_count error:', err); });
   }
   await refreshData();
   renderAdmin();
@@ -2529,8 +2636,11 @@ window.batchAnalyzeReady = async function() {
   let done = 0;
   let successCount = 0;
   let failedCount = 0;
+  let statsSyncFailed = false;
 
   for(const c of courses) {
+    // 记录旧状态，避免重复计数
+    const oldAiStatus = c.ai_analysis_status;
     // 标记分析中
     await sbClient.from('courses').update({ ai_analysis_status: 'analyzing' }).eq('course_id', c.course_id);
     const result = await callAiAnalysis(c);
@@ -2555,13 +2665,30 @@ window.batchAnalyzeReady = async function() {
         updates.ai_layer = '重点提升课';
       }
       await sbClient.from('courses').update(updates).eq('course_id', c.course_id);
-      // 批次回写
+      // 批次回写（根据旧状态避免重复计数）
       if(c.import_batch_id) {
-        await sbClient.rpc('increment_batch_count', {
-          batch_id: c.import_batch_id,
-          field: 'ai_analysis_done',
-          delta: 1
-        }).catch(()=>{});
+        if(oldAiStatus === 'success') {
+          // 已是成功状态，不重复计数
+        } else if(oldAiStatus === 'failed') {
+          // 失败转成功：失败-1，成功+1
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_failed',
+            p_delta: -1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_done',
+            p_delta: 1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+        } else {
+          // pending / analyzing → 成功：成功计数+1
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_done',
+            p_delta: 1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+        }
       }
       successCount++;
     } else {
@@ -2571,11 +2698,28 @@ window.batchAnalyzeReady = async function() {
         updated_at: now()
       }).eq('course_id', c.course_id);
       if(c.import_batch_id) {
-        await sbClient.rpc('increment_batch_count', {
-          batch_id: c.import_batch_id,
-          field: 'ai_analysis_failed',
-          delta: 1
-        }).catch(()=>{});
+        if(oldAiStatus === 'failed') {
+          // 已算过失败，不重复计数
+        } else if(oldAiStatus === 'success') {
+          // 成功转失败（防御性处理）
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_done',
+            p_delta: -1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_failed',
+            p_delta: 1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+        } else {
+          // pending / analyzing → 失败：失败计数+1
+          await sbClient.rpc('increment_batch_count', {
+            p_batch_id: c.import_batch_id,
+            p_field: 'ai_analysis_failed',
+            p_delta: 1
+          }).catch(err => { console.error('increment_batch_count error:', err); statsSyncFailed = true; });
+        }
       }
       failedCount++;
     }
@@ -2589,6 +2733,9 @@ window.batchAnalyzeReady = async function() {
   await syncBatchStatsFromCourses();
   await refreshData();
   renderAdmin();
+  if(statsSyncFailed) {
+    showToast('部分批次统计同步失败，可点击批次管理页的刷新统计手动重算', 'error');
+  }
   alert(`🎉 批量分析完成！\n\n成功：${successCount} 节\n失败：${failedCount} 节\n总用时约 ${Math.ceil(courses.length * 3)} 秒`);
 };
 
@@ -3740,7 +3887,7 @@ async function seedSampleData() {
       await sbClient.from('courses').delete().neq('course_id', '');
       await sbClient.from('reviewers').delete().neq('reviewer_id', '');
       await sbClient.from('review_logs').delete().neq('log_id', '');
-      await sbClient.from('import_batches').delete().neq('id', '').catch(()=>{});
+      await sbClient.from('import_batches').delete().neq('id', '').catch(err => { console.error('demo data cleanup error:', err); });
     }
 
     const r1 = uuid(), r2 = uuid(), r3 = uuid(), r4 = uuid(), r5 = uuid();
@@ -3767,7 +3914,7 @@ async function seedSampleData() {
       ai_analysis_done: 0,
       ai_analysis_failed: 0
     };
-    await sbClient.from('import_batches').insert(sampleBatch).catch(()=>{});
+    await sbClient.from('import_batches').insert(sampleBatch).catch(err => { console.error('demo data batch insert error:', err); });
 
     const courses = [
       // 优秀课候选

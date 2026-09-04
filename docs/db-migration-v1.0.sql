@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS courses (
   report_fetch_status TEXT DEFAULT 'pending',
   report_fetch_error TEXT DEFAULT '',
   report_raw_text TEXT DEFAULT '',
-  report_structured_json TEXT DEFAULT '',
+  report_structured_json JSONB DEFAULT '{}'::jsonb,
   -- v1.0 新增：AI 深度分析相关
   ai_deep_analysis TEXT DEFAULT '',
   ai_action_suggestions TEXT DEFAULT '',
@@ -259,7 +259,21 @@ END $$;
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='courses' AND column_name='report_structured_json') THEN
-    ALTER TABLE courses ADD COLUMN report_structured_json TEXT DEFAULT '';
+    ALTER TABLE courses ADD COLUMN report_structured_json JSONB DEFAULT '{}'::jsonb;
+  ELSE
+    -- 如果已有列且类型为 TEXT，安全转换为 JSONB
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name='courses' AND column_name='report_structured_json' AND data_type='text'
+    ) THEN
+      ALTER TABLE courses ALTER COLUMN report_structured_json
+        TYPE JSONB USING
+        CASE
+          WHEN report_structured_json IS NULL OR report_structured_json = '' THEN '{}'::jsonb
+          ELSE report_structured_json::jsonb
+        END;
+      ALTER TABLE courses ALTER COLUMN report_structured_json SET DEFAULT '{}'::jsonb;
+    END IF;
   END IF;
 EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
